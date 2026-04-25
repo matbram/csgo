@@ -15,21 +15,32 @@ import type { Bot } from '../entities/bot';
 import type { Character } from '../entities/character';
 import { hitboxPose } from '../entities/character';
 import type { FiringController } from '../combat/firing';
-import type { Perception, KnownEnemy } from './perception';
+import type { Perception } from './perception';
 import type { BotDifficulty } from './difficulty';
 import { activeInstance } from '../weapons/inventory';
+import type { World } from '../map/world';
+import type { BombState } from '../match/bomb';
+import { pointInPolygon2D } from '../map/world';
 
-export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload';
+export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload' | 'plant' | 'defuse';
 
 const DECISION_INTERVAL_MS = 200;     // 5 Hz
 /** Bonus utility for the action that's already running so we don't
  *  flip-flop between Engage and MoveToObjective every decision tick. */
 const HYSTERESIS = 5;
+/** A CT bot considers itself "near" a planted bomb when within this many
+ *  meters in XZ — slightly larger than the defuse range (1.0 m) so the
+ *  brain commits to a defuse approach before the FSM accepts it. */
+const DEFUSE_APPROACH_M = 1.4;
 
 export interface BrainContext {
   /** All characters in the world (so the brain can resolve a known-enemy
    *  id back to the live Character record for current-tick chest pos). */
   characters: Character[];
+  /** Current bomb state — drives plant/defuse intents. */
+  bomb: BombState | null;
+  /** World — needed for bombsite polygon tests. */
+  world: World;
 }
 
 export class Brain {
@@ -48,6 +59,15 @@ export class Brain {
   /** Whether the last tick actually pulled the trigger (used for trigger
    *  edges on semi/bolt weapons). */
   private firedLastTick = false;
+  /** True while the brain wants the bot to hold the plant key. main.ts
+   *  reads this to assemble the per-tick PlanterIntent for the bomb FSM. */
+  wantsPlant = false;
+  /** True while the brain wants the bot to hold the defuse key. */
+  wantsDefuse = false;
+  /** Context captured at the top of step() so decide() (which runs at a
+   *  lower cadence) can see the same world state without us having to
+   *  thread the ctx through the call. */
+  private lastCtx: BrainContext | null = null;
 
   constructor(
     private readonly difficulty: BotDifficulty,
@@ -66,6 +86,7 @@ export class Brain {
     dtMs: number,
     nowMs: number,
   ): { followPath: boolean } {
+    this.lastCtx = ctx;
     if (nowMs >= this.nextDecisionMs) {
       this.nextDecisionMs = nowMs + DECISION_INTERVAL_MS;
       this.decide(bot, perception, nowMs);
@@ -79,6 +100,10 @@ export class Brain {
     }
 
     let followPath = true;
+    // Default plant/defuse to false; the runPlant/runDefuse branches
+    // re-assert true when active.
+    this.wantsPlant = false;
+    this.wantsDefuse = false;
     switch (this.state) {
       case 'engage':
         followPath = false;
@@ -87,6 +112,14 @@ export class Brain {
       case 'reload':
         followPath = false;
         this.runReload(bot, firing, nowMs);
+        break;
+      case 'plant':
+        followPath = false;
+        this.runPlant(bot, firing, nowMs);
+        break;
+      case 'defuse':
+        followPath = false;
+        this.runDefuse(bot, firing, nowMs);
         break;
       case 'movetoObj':
         // Movement happens via stepBot's path follower. Brain only feeds a
@@ -106,6 +139,7 @@ export class Brain {
   // ---- Decision ------------------------------------------------------
 
   private decide(bot: Bot, perception: Perception, nowMs: number): void {
+    const ctx = this.lastCtx!;
     const target = perception.bestTarget(bot.character.pos.x, bot.character.pos.z);
     const inst = bot.character.inventory ? activeInstance(bot.character.inventory) : null;
 
@@ -114,7 +148,38 @@ export class Brain {
       reload: 0,
       moveto: 0,
       idle: 0,
+      plant: 0,
+      defuse: 0,
     };
+
+    // ---- Plant: T carrier on a bombsite, no immediate threat.
+    const bomb = ctx.bomb;
+    if (
+      bot.character.team === 'T' &&
+      bot.character.inventory?.c4 &&
+      bomb &&
+      (bomb.phase === 'carried' || bomb.phase === 'planting') &&
+      bomb.carrierId === bot.id &&
+      !perception.hasVisible() &&
+      onBombsite(ctx, bot.character.pos.x, bot.character.pos.y, bot.character.pos.z)
+    ) {
+      u.plant = 110;     // beats engage when alone on site
+    }
+
+    // ---- Defuse: CT near a planted bomb, no immediate threat.
+    if (
+      bot.character.team === 'CT' &&
+      bomb &&
+      (bomb.phase === 'planted' || bomb.phase === 'defusing') &&
+      bomb.pos &&
+      !perception.hasVisible()
+    ) {
+      const dx = bomb.pos.x - bot.character.pos.x;
+      const dz = bomb.pos.z - bot.character.pos.z;
+      if (dx * dx + dz * dz <= DEFUSE_APPROACH_M * DEFUSE_APPROACH_M) {
+        u.defuse = 110;
+      }
+    }
 
     if (target && target.confidence === 'visible' && inst && inst.def.fireMode !== 'planted') {
       const ammoOk = inst.def.magazine === 0 || inst.ammoMag > 0;
@@ -145,6 +210,8 @@ export class Brain {
         case 'reload':    u.reload += HYSTERESIS; break;
         case 'movetoObj': u.moveto += HYSTERESIS; break;
         case 'idle':      u.idle += HYSTERESIS; break;
+        case 'plant':     u.plant += HYSTERESIS; break;
+        case 'defuse':    u.defuse += HYSTERESIS; break;
       }
     }
 
@@ -153,6 +220,8 @@ export class Brain {
     if (u.engage > bestU) { next = 'engage'; bestU = u.engage; }
     if (u.reload > bestU) { next = 'reload'; bestU = u.reload; }
     if (u.moveto > bestU) { next = 'movetoObj'; bestU = u.moveto; }
+    if (u.plant  > bestU) { next = 'plant';  bestU = u.plant;  }
+    if (u.defuse > bestU) { next = 'defuse'; bestU = u.defuse; }
 
     if (next !== this.state) {
       this.state = next;
@@ -278,6 +347,20 @@ export class Brain {
     this.firedLastTick = false;
   }
 
+  /** Plant action — stand still and signal the match's bomb FSM that
+   *  we're holding the plant key. main.ts assembles a PlanterIntent
+   *  from this flag plus the carrier's pos. */
+  private runPlant(bot: Bot, firing: FiringController, nowMs: number): void {
+    this.wantsPlant = true;
+    this.runIdleFire(bot, firing, nowMs);
+  }
+
+  /** Defuse action — same shape, but we want the defuse key. */
+  private runDefuse(bot: Bot, firing: FiringController, nowMs: number): void {
+    this.wantsDefuse = true;
+    this.runIdleFire(bot, firing, nowMs);
+  }
+
   /** "Idle fire" is a misnomer — we just step the firing controller with
    *  no input so deploy / reload timers continue advancing. Without this
    *  call, a bot that switches weapons mid-path never finishes its deploy. */
@@ -296,6 +379,14 @@ export class Brain {
 }
 
 // ---- Helpers --------------------------------------------------------
+
+function onBombsite(ctx: BrainContext, x: number, y: number, z: number): boolean {
+  for (const s of ctx.world.bombSites) {
+    if (y < s.yMin - 0.1 || y > s.yMax + 0.1) continue;
+    if (pointInPolygon2D(x, z, s.polygon)) return true;
+  }
+  return false;
+}
 
 function aimRequest(bot: Bot, _mode: string): { ox: number; oy: number; oz: number; fwdX: number; fwdY: number; fwdZ: number } {
   const yaw = bot.controller.state.yaw;

@@ -77,11 +77,11 @@ export class Perception {
     return false;
   }
 
-  /** Inject a heard event (Pass 3 hooks this from gunshot / footstep
-   *  emitters). Sound has the lowest confidence. */
+  /** Inject a heard event from a gunshot or footstep emitter. Sound has
+   *  the lowest confidence — bots will turn to face the noise but won't
+   *  fire blind into it. We refuse to downgrade a recent sighting. */
   reportSound(id: string, x: number, y: number, z: number, nowMs: number): void {
     const existing = this.known.get(id);
-    // Don't downgrade a recent sighting to a sound.
     if (existing && existing.lastSeenMs > nowMs - 1000 && existing.confidence !== 'sound') {
       return;
     }

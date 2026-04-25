@@ -33,11 +33,13 @@ import { ViewModel } from './player/viewModel';
 import { CombatSystem } from './combat/combat';
 import { FiringController } from './combat/firing';
 import { activeInstance, switchTo, makeInstance, cycleScope, nextScrollSlot } from './weapons/inventory';
+import { runBotBuy } from './ai/buy';
 import type { WeaponInstance } from './weapons/inventory';
 import { installCombatVisuals } from './combat/visuals';
 import { installAudio, ensureAudioContext, setListenerPose, playSound } from './audio/audio';
 import { CombatHud } from './hud/combatHud';
 import { ScopeHud } from './hud/scopeHud';
+import { AiDebugHud } from './hud/aiDebug';
 import { createBot, snapBotToCharacterPose, setBotObjective, stepBot, syncBotMesh, type Bot } from './entities/bot';
 import { NavGrid } from './nav/grid';
 import { PathService } from './nav/pathService';
@@ -145,6 +147,7 @@ function bootstrap(): void {
   const debugHud = new DebugHud(controller, world);
   const combatHud = new CombatHud();
   const scopeHud = new ScopeHud();
+  const aiDebugHud = new AiDebugHud();
   const roundHud = new RoundHud(hudRoot);
   const scoreboard = new Scoreboard(hudRoot);
   const c4Entity = new C4Entity();
@@ -181,6 +184,24 @@ function bootstrap(): void {
     if (vic) vic.deaths += 1;
   });
 
+  // Gunshot → sound perception. Every bot on the opposing team within
+  // hearing range gets a 'sound' confidence ping at the shooter's
+  // position. Bots already in 'visible' state on the same shooter keep
+  // their higher-confidence intel — `reportSound` won't downgrade.
+  const HEARING_RANGE_M = 35;
+  events.on('combat:fire', ({ shooterId, ox, oy, oz, tMs }) => {
+    const shooter = characters.find(c => c.id === shooterId);
+    if (!shooter) return;
+    for (const bot of bots) {
+      if (!bot.character.alive) continue;
+      if (bot.character.team === shooter.team) continue;
+      const dx = bot.character.pos.x - ox;
+      const dz = bot.character.pos.z - oz;
+      if (dx * dx + dz * dz > HEARING_RANGE_M * HEARING_RANGE_M) continue;
+      bot.perception.reportSound(shooterId, ox, oy, oz, tMs);
+    }
+  });
+
   // 9) Input
   canvas.addEventListener('click', () => ensureAudioContext());
   input.attach(canvas);
@@ -195,10 +216,12 @@ function bootstrap(): void {
     const ctBots: Bot[] = [];
     for (const bot of bots) {
       snapBotToCharacterPose(bot);
-      // Pass 2: give every bot a side-appropriate primary at round start
-      // so they have teeth to engage with. Pass 3 replaces this with the
-      // proper buy logic that respects each bot's economy.
-      ensureBotPrimary(bot);
+      // Run each bot's buy plan once the new round's loadout is settled.
+      // Bots that survived already have their primary thanks to the
+      // roster's carry-over rule, so runBotBuy is a no-op for them
+      // beyond a possible armor top-up.
+      const slot = match.players.get(bot.id);
+      if (slot) runBotBuy(slot, bot.character);
       if (bot.character.team === 'T') tBots.push(bot);
       else ctBots.push(bot);
     }
@@ -214,17 +237,23 @@ function bootstrap(): void {
     }
   };
 
-  const ensureBotPrimary = (bot: Bot): void => {
-    if (!bot.character.inventory) return;
-    if (bot.character.inventory.primary) return;
-    const id = bot.character.team === 'T' ? 'ak47' : 'm4a4';
-    bot.character.inventory.primary = makeInstance(id);
-    bot.character.inventory.active = 'primary';
+
+  /** Capture every alive character id BEFORE resetCharacterForRound flips
+   *  alive back to true, so resetRoster can carry over the surviving
+   *  loadouts. The local player is always treated as a survivor on the
+   *  very first round (they spawn alive with their default kit). */
+  const snapshotSurvivors = (alwaysIncludeLocal = false): Set<string> => {
+    const out = new Set<string>();
+    for (const c of characters) {
+      if (c.alive) out.add(c.id);
+    }
+    if (alwaysIncludeLocal) out.add('local');
+    return out;
   };
 
   // First round. Reset everyone first so beginRound's carrier pick sees
   // alive characters; then begin the round; then assign the C4 to the carrier.
-  resetRoster(characters, localPlayer, world, match, /* localSurvived */ true);
+  resetRoster(characters, localPlayer, world, match, snapshotSurvivors(/* alwaysIncludeLocal */ true));
   match = beginRound(match, time.simMs, characters);
   if (match.round?.bomb?.carrierId) {
     assignBomb(characters, match.round.bomb.carrierId);
@@ -240,6 +269,7 @@ function bootstrap(): void {
     fps.applyMouseLook();
 
     if (input.wasPressed('F3')) debugHud.toggle();
+    if (input.wasPressed('F4')) aiDebugHud.toggle();
 
     // Tab → scoreboard. Press / release edges; we also keep it sticky during round end.
     const tabHeld = input.isDown('Tab');
@@ -415,10 +445,11 @@ function bootstrap(): void {
     // decision into stepBot so the controller stays the single source of
     // truth for movement.
     if (match.round?.phase === 'live') {
+      const brainCtx = { characters, bomb: match.round?.bomb ?? null, world };
       for (const bot of bots) {
         if (!bot.character.alive) continue;
         bot.perception.maybeStep(bot.character, characters, query, time.simMs);
-        const decision = bot.brain.step(bot, bot.perception, { characters }, firing, dtMs, time.simMs);
+        const decision = bot.brain.step(bot, bot.perception, brainCtx, firing, dtMs, time.simMs);
         stepBot(bot, dtMs, time.simMs, pathService, {
           followPath: decision.followPath,
           // While engaging the brain owns yaw; let it through unmodified.
@@ -434,29 +465,60 @@ function bootstrap(): void {
       }
     }
 
-    // Plant / defuse intent — read from the same E key.
+    // Plant / defuse intent — read from the same E key. We assemble
+    // exactly one PlanterIntent (the bomb FSM only acts on the carrier)
+    // and a list of defuser intents (the FSM picks the closest). Bots
+    // surface their wants via `brain.wantsPlant` / `brain.wantsDefuse`
+    // and we paper that onto the same struct shape the local player
+    // produces — the FSM doesn't need to know who's a bot.
     const eHeld = input.isDown('KeyE') && !buyMenu.isOpen() && localPlayer.character.alive;
-    const planterIntent = (() => {
+    const carrierId = match.round?.bomb?.carrierId ?? null;
+    let planterIntent: { id: string; pos: import('@babylonjs/core/Maths/math.vector').Vector3; holdingPlant: boolean; alive: boolean } | null = null;
+    if (carrierId === 'local') {
       const inv = localPlayer.character.inventory;
-      const hasC4 = !!inv?.c4;
-      if (!hasC4) return null;
-      if (localPlayer.character.team !== 'T') return null;
-      return {
-        id: 'local',
-        pos: localPlayer.character.pos,
-        holdingPlant: eHeld,
-        alive: localPlayer.character.alive,
-      };
-    })();
-    const defuserIntents = localPlayer.character.team === 'CT' && match.round?.bomb && match.round.bomb.phase === 'planted'
-      ? [{
+      if (inv?.c4 && localPlayer.character.team === 'T') {
+        planterIntent = {
+          id: 'local',
+          pos: localPlayer.character.pos,
+          holdingPlant: eHeld,
+          alive: localPlayer.character.alive,
+        };
+      }
+    } else if (carrierId) {
+      const carrier = bots.find(b => b.id === carrierId);
+      if (carrier) {
+        planterIntent = {
+          id: carrier.id,
+          pos: carrier.character.pos,
+          holdingPlant: carrier.brain.wantsPlant,
+          alive: carrier.character.alive,
+        };
+      }
+    }
+
+    const defuserIntents: Array<{ id: string; pos: import('@babylonjs/core/Maths/math.vector').Vector3; holdingDefuse: boolean; hasKit: boolean; alive: boolean }> = [];
+    if (match.round?.bomb && (match.round.bomb.phase === 'planted' || match.round.bomb.phase === 'defusing')) {
+      if (localPlayer.character.team === 'CT') {
+        defuserIntents.push({
           id: 'local',
           pos: localPlayer.character.pos,
           holdingDefuse: eHeld,
           hasKit: localPlayer.character.hasKit,
           alive: localPlayer.character.alive,
-        }]
-      : [];
+        });
+      }
+      for (const bot of bots) {
+        if (bot.character.team !== 'CT') continue;
+        if (!bot.character.alive) continue;
+        defuserIntents.push({
+          id: bot.id,
+          pos: bot.character.pos,
+          holdingDefuse: bot.brain.wantsDefuse,
+          hasKit: bot.character.hasKit,
+          alive: true,
+        });
+      }
+    }
 
     // Step the match.
     match = stepMatch(match, {
@@ -491,9 +553,10 @@ function bootstrap(): void {
         // Match over — sit here forever.
       } else {
         // Start the next round. Reset before beginRound so the carrier
-        // pick sees alive characters.
-        const localSurvived = localPlayer.character.alive;
-        resetRoster(characters, localPlayer, world, match, localSurvived);
+        // pick sees alive characters. snapshotSurvivors() runs before
+        // resetRoster so carry-over reflects who actually survived.
+        const survivors = snapshotSurvivors();
+        resetRoster(characters, localPlayer, world, match, survivors);
         match = beginRound(match, time.simMs, characters);
         if (match.round?.bomb?.carrierId) {
           assignBomb(characters, match.round.bomb.carrierId);
@@ -520,7 +583,8 @@ function bootstrap(): void {
       if (localSlot) {
         localPlayer.character.team = localSlot.currentSide;
       }
-      resetRoster(characters, localPlayer, world, match, /* localSurvived */ false);
+      // Halftime: nobody carries over — fresh defaults for everyone.
+      resetRoster(characters, localPlayer, world, match, new Set<string>());
       match = beginRound(match, time.simMs, characters);
       if (match.round?.bomb?.carrierId) {
         assignBomb(characters, match.round.bomb.carrierId);
@@ -577,6 +641,7 @@ function bootstrap(): void {
     );
 
     debugHud.update(renderDtMs);
+    aiDebugHud.update(bots);
     combatHud.update(localPlayer.character, performance.now());
     roundHud.update(match, characters, time.simMs);
     scoreboard.update(match, characters);
