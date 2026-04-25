@@ -55,6 +55,15 @@ export function runBotBuy(slot: MatchPlayerSlot, character: Character): void {
     if (side === 'CT' && !character.hasKit) {
       purchaseKit(slot, character);
     }
+    // Grenades — only on a comfortable full buy. We try the cheapest
+    // useful set first (one flash + one smoke); the buy's per-kind cap
+    // makes re-attempts no-ops if the bot already owns one.
+    const haveKind = (id: 'he' | 'flashbang' | 'smoke' | 'molotov'): boolean =>
+      character.inventory!.grenades.some(g => g.def.id === id);
+    if (slot.money >= 200 && !haveKind('flashbang')) purchaseWeapon(slot, character, 'flashbang');
+    if (slot.money >= 300 && !haveKind('smoke'))     purchaseWeapon(slot, character, 'smoke');
+    if (slot.money >= 300 && !haveKind('he'))        purchaseWeapon(slot, character, 'he');
+    if (slot.money >= 400 && !haveKind('molotov'))   purchaseWeapon(slot, character, 'molotov');
     return;
   }
 

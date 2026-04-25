@@ -204,6 +204,10 @@ function bootstrap(): void {
   // Round-end → next round transition handled in sim loop.
   let roundEndApplied = false;
   let lastRoundNumber = 0;
+  // Sim ms when the current round entered live phase (post-freeze).
+  // Used by the bot brain's grenade-lineup trigger windows.
+  let liveStartedAtMs = 0;
+  let lastSeenPhase: 'freeze' | 'live' | 'end' | null = null;
 
   // Track local-player kills/deaths for scoreboard + economy.
   events.on('combat:kill', ({ attackerId, victimId, weapon }) => {
@@ -568,6 +572,14 @@ function bootstrap(): void {
     // hold ground (engage / reload) or follow its path; we surface that
     // decision into stepBot so the controller stays the single source of
     // truth for movement.
+    // Track the freeze→live transition so lineup triggers know when
+    // "opening" actually starts.
+    const curPhase = match.round?.phase ?? null;
+    if (curPhase === 'live' && lastSeenPhase !== 'live') {
+      liveStartedAtMs = time.simMs;
+    }
+    lastSeenPhase = curPhase;
+
     if (match.round?.phase === 'live') {
       // Blackboard refresh once per tick: aggregate per-bot KnownEnemies
       // into the team map, mirror the bomb FSM, and prune stale role
@@ -602,6 +614,8 @@ function bootstrap(): void {
           enemiesAlive: enemies,
           spawnX: spawnPos.x,
           spawnZ: spawnPos.z,
+          grenades: grenadeSystem,
+          liveSinceMs: liveStartedAtMs,
         };
         // Save state retargets the bot's path to spawn. We re-apply here
         // each tick so a transition out of save restores the strategist's

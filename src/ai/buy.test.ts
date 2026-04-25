@@ -38,22 +38,28 @@ describe('runBotBuy', () => {
     c = makeChar('T');
   });
 
-  it('full buy gives a primary + helmet', () => {
+  it('full buy gives a primary + helmet + grenades', () => {
     slot.money = 5000;
     runBotBuy(slot, c);
     expect(c.inventory!.primary?.def.id).toBe('ak47');
     expect(c.helmet).toBe(true);
-    // Cost: AK 2700 + helmet 1000 = 3700; should leave 1300.
-    expect(slot.money).toBe(1300);
+    // AK 2700 + helmet 1000 + flash 200 + smoke 300 + HE 300 + molly
+    // 400 = 4900 spent → $100 remaining.
+    expect(slot.money).toBe(100);
+    expect(c.inventory!.grenades.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('CT full buy includes a defuse kit', () => {
+  it('CT full buy includes a defuse kit + grenades', () => {
     slot = makeSlot('b', 'CT', 5500);
     c = makeChar('CT');
     runBotBuy(slot, c);
     expect(c.inventory!.primary?.def.id).toBe('m4a4');
     expect(c.helmet).toBe(true);
     expect(c.hasKit).toBe(true);
+    // Bots that buy a primary on a $5500 wallet end up with at least
+    // a flashbang (200) — anything cheaper than the kit gets squeezed
+    // in.
+    expect(c.inventory!.grenades.length).toBeGreaterThan(0);
   });
 
   it('force buy at $3500 picks rifle and skips armor', () => {

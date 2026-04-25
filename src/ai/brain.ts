@@ -17,13 +17,15 @@ import { hitboxPose } from '../entities/character';
 import type { FiringController } from '../combat/firing';
 import type { Perception } from './perception';
 import type { BotDifficulty } from './difficulty';
-import { activeInstance } from '../weapons/inventory';
+import { activeInstance, switchTo } from '../weapons/inventory';
 import type { World } from '../map/world';
 import type { BombState } from '../match/bomb';
 import { pointInPolygon2D } from '../map/world';
 import type { TeamBlackboard } from './blackboard';
+import type { GrenadeLineup } from './grenadeLineups';
+import type { GrenadeSystem } from '../grenades/system';
 
-export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload' | 'plant' | 'defuse' | 'save';
+export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload' | 'plant' | 'defuse' | 'save' | 'throwGrenade';
 
 const DECISION_INTERVAL_MS = 200;     // 5 Hz
 /** Bonus utility for the action that's already running so we don't
@@ -56,6 +58,11 @@ export interface BrainContext {
    *  toward safety. */
   spawnX: number;
   spawnZ: number;
+  /** Grenade system — the brain calls into it when executing a lineup. */
+  grenades: GrenadeSystem;
+  /** Sim ms when the round entered live phase. Used to gate 'opening'
+   *  lineups (only consider them within the first few seconds). */
+  liveSinceMs: number;
 }
 
 export class Brain {
@@ -83,6 +90,11 @@ export class Brain {
    *  lower cadence) can see the same world state without us having to
    *  thread the ctx through the call. */
   private lastCtx: BrainContext | null = null;
+  /** Lineup the bot picked up this round; null when nothing to throw. */
+  pendingLineup: GrenadeLineup | null = null;
+  /** Sim ms before which we don't try to throw — used to give the bot a
+   *  beat to get into position after picking up a lineup. */
+  private throwReadyAtMs = 0;
 
   constructor(
     private readonly difficulty: BotDifficulty,
@@ -142,6 +154,10 @@ export class Brain {
         // pathing toward a different target.
         this.runIdleFire(bot, firing, nowMs);
         break;
+      case 'throwGrenade':
+        followPath = false;
+        this.runThrowGrenade(bot, ctx, firing, dtMs, nowMs);
+        break;
       case 'movetoObj':
         // Movement happens via stepBot's path follower. Brain only feeds a
         // null fire input so weapon state ticks normally (deploy + reload
@@ -172,7 +188,35 @@ export class Brain {
       plant: 0,
       defuse: 0,
       save: 0,
+      throwGrenade: 0,
     };
+
+    // ---- Throw grenade: bot has a pending lineup, owns the right
+    //      kind, and is in throw position. We score below engage so a
+    //      visible enemy interrupts the throw (preferable: shoot first,
+    //      throw later) but above moveto so the bot prioritizes the
+    //      lineup over its anchor objective.
+    if (this.pendingLineup && bot.character.inventory && nowMs >= this.throwReadyAtMs) {
+      const lu = this.pendingLineup;
+      const haveKind = bot.character.inventory.grenades.some(g => g.def.id === lu.kind);
+      const triggerOk = isLineupTriggered(lu, ctx, nowMs);
+      if (haveKind && triggerOk) {
+        // Distance to the fromCallout — bot must be in throw position.
+        const fromPos = ctx.world.callouts.get(lu.fromCallout)?.centroid;
+        if (fromPos) {
+          const dx = fromPos[0] - bot.character.pos.x;
+          const dz = fromPos[1] - bot.character.pos.z;
+          const dist = Math.hypot(dx, dz);
+          // Within a few meters: ready to throw.
+          // Further out: we want to keep moving via the strategist's
+          // objective; the lineup will fire once the bot arrives.
+          if (dist <= 3.0) u.throwGrenade = 80;
+        }
+      } else if (!haveKind) {
+        // Lineup is unrunnable (we never bought / used it). Drop it.
+        this.pendingLineup = null;
+      }
+    }
 
     // ---- Plant: T carrier on a bombsite, no immediate threat.
     const bomb = ctx.bomb;
@@ -247,24 +291,26 @@ export class Brain {
 
     if (this.state) {
       switch (this.state) {
-        case 'engage':    u.engage += HYSTERESIS; break;
-        case 'reload':    u.reload += HYSTERESIS; break;
-        case 'movetoObj': u.moveto += HYSTERESIS; break;
-        case 'idle':      u.idle += HYSTERESIS; break;
-        case 'plant':     u.plant += HYSTERESIS; break;
-        case 'defuse':    u.defuse += HYSTERESIS; break;
-        case 'save':      u.save += HYSTERESIS; break;
+        case 'engage':       u.engage += HYSTERESIS; break;
+        case 'reload':       u.reload += HYSTERESIS; break;
+        case 'movetoObj':    u.moveto += HYSTERESIS; break;
+        case 'idle':         u.idle += HYSTERESIS; break;
+        case 'plant':        u.plant += HYSTERESIS; break;
+        case 'defuse':       u.defuse += HYSTERESIS; break;
+        case 'save':         u.save += HYSTERESIS; break;
+        case 'throwGrenade': u.throwGrenade += HYSTERESIS; break;
       }
     }
 
     let next: BrainState = 'idle';
     let bestU = u.idle;
-    if (u.engage > bestU) { next = 'engage'; bestU = u.engage; }
-    if (u.reload > bestU) { next = 'reload'; bestU = u.reload; }
-    if (u.moveto > bestU) { next = 'movetoObj'; bestU = u.moveto; }
-    if (u.save   > bestU) { next = 'save';   bestU = u.save;   }
-    if (u.plant  > bestU) { next = 'plant';  bestU = u.plant;  }
-    if (u.defuse > bestU) { next = 'defuse'; bestU = u.defuse; }
+    if (u.engage       > bestU) { next = 'engage'; bestU = u.engage; }
+    if (u.reload       > bestU) { next = 'reload'; bestU = u.reload; }
+    if (u.moveto       > bestU) { next = 'movetoObj'; bestU = u.moveto; }
+    if (u.save         > bestU) { next = 'save';   bestU = u.save;   }
+    if (u.throwGrenade > bestU) { next = 'throwGrenade'; bestU = u.throwGrenade; }
+    if (u.plant        > bestU) { next = 'plant';  bestU = u.plant;  }
+    if (u.defuse       > bestU) { next = 'defuse'; bestU = u.defuse; }
 
     if (next !== this.state) {
       this.state = next;
@@ -398,6 +444,103 @@ export class Brain {
     this.runIdleFire(bot, firing, nowMs);
   }
 
+  /** Throw the current pending lineup. Steps:
+   *    1. Switch to the right grenade kind in the inventory.
+   *    2. Wait the deploy interval (handled by firing-state poll).
+   *    3. Aim at the target callout (smoothed yaw + 0.4 rad upward
+   *       pitch — the lob arc handles the rest).
+   *    4. When deployed AND on target, throw via grenadeSystem and
+   *       remove the consumed grenade from the bot's stack.
+   *
+   *  After throwing, the lineup is cleared and the brain falls back to
+   *  movetoObj naturally next decide(). */
+  private runThrowGrenade(
+    bot: Bot,
+    ctx: BrainContext,
+    firing: FiringController,
+    dtMs: number,
+    nowMs: number,
+  ): void {
+    if (!this.pendingLineup || !bot.character.inventory) {
+      this.runIdleFire(bot, firing, nowMs);
+      return;
+    }
+    const lu = this.pendingLineup;
+    const inv = bot.character.inventory;
+    // 1) Deploy the right grenade. If a different kind is currently
+    // active, switch — switchTo handles deploy timing.
+    const idxOfKind = inv.grenades.findIndex(g => g.def.id === lu.kind);
+    if (idxOfKind < 0) {
+      this.pendingLineup = null;
+      this.runIdleFire(bot, firing, nowMs);
+      return;
+    }
+    if (inv.active !== 'grenade' || inv.activeGrenadeIdx !== idxOfKind) {
+      inv.activeGrenadeIdx = idxOfKind;
+      // Force an active-slot swap so the grenade enters its deploy
+      // phase. switchTo refuses a no-op switch when slot is unchanged,
+      // so flip via a temporary re-assignment.
+      if (inv.active !== 'grenade') {
+        switchTo(inv, 'grenade', nowMs);
+      } else {
+        const inst = inv.grenades[idxOfKind]!;
+        inst.state = 'deploying';
+        inst.stateUntilMs = nowMs + inst.def.deployMs;
+      }
+    }
+
+    // 2) Aim. Target = callout centroid; pitch = 25° upward for a lob.
+    const target = ctx.world.callouts.get(lu.targetCallout)?.centroid;
+    if (!target) {
+      this.pendingLineup = null;
+      this.runIdleFire(bot, firing, nowMs);
+      return;
+    }
+    const eyeX = bot.character.pos.x;
+    const eyeY = bot.character.pos.y + bot.character.currentEye;
+    const eyeZ = bot.character.pos.z;
+    const dx = target[0] - eyeX;
+    const dz = target[1] - eyeZ;
+    const desiredYaw = Math.atan2(dx, dz);
+    const desiredPitch = -0.45;        // ~25° upward (negative pitch
+                                       // looks up in our convention).
+    const k = 1 - Math.exp(-dtMs / 80);
+    bot.controller.state.yaw = lerpAngle(bot.controller.state.yaw, desiredYaw, k);
+    bot.controller.state.pitch = bot.controller.state.pitch + (desiredPitch - bot.controller.state.pitch) * k;
+    bot.character.yaw = bot.controller.state.yaw;
+    bot.character.pitch = bot.controller.state.pitch;
+
+    // 3) Throw when the grenade is deployed and aim is close enough.
+    const inst = inv.grenades[inv.activeGrenadeIdx]!;
+    const aimErrYaw = Math.abs(angleDiff(bot.controller.state.yaw, desiredYaw));
+    const aimErrPitch = Math.abs(bot.controller.state.pitch - desiredPitch);
+    if (inst.state === 'ready' && aimErrYaw < 0.1 && aimErrPitch < 0.15) {
+      const cosP = Math.cos(bot.controller.state.pitch);
+      ctx.grenades.throw_(
+        lu.kind,
+        bot.id,
+        {
+          ox: eyeX, oy: eyeY, oz: eyeZ,
+          fwdX: Math.sin(bot.controller.state.yaw) * cosP,
+          fwdY: Math.sin(bot.controller.state.pitch),
+          fwdZ: Math.cos(bot.controller.state.yaw) * cosP,
+          power: 'full',
+        },
+        nowMs,
+      );
+      inv.grenades.splice(inv.activeGrenadeIdx, 1);
+      inv.activeGrenadeIdx = 0;
+      // Drop back to a real weapon so the next decide() picks engage
+      // or moveto correctly.
+      if (inv.primary) inv.active = 'primary';
+      else if (inv.secondary) inv.active = 'secondary';
+      else inv.active = 'knife';
+      this.pendingLineup = null;
+    } else {
+      this.runIdleFire(bot, firing, nowMs);
+    }
+  }
+
   /** Defuse action — same shape, but we want the defuse key. */
   private runDefuse(bot: Bot, firing: FiringController, nowMs: number): void {
     this.wantsDefuse = true;
@@ -422,6 +565,27 @@ export class Brain {
 }
 
 // ---- Helpers --------------------------------------------------------
+
+function isLineupTriggered(lu: GrenadeLineup, ctx: BrainContext, nowMs: number): boolean {
+  switch (lu.trigger) {
+    case 'opening':
+      // Open the round: only fire within the first 6 s of live phase.
+      return nowMs - ctx.liveSinceMs < 6000;
+    case 'pre_push':
+      // Throw when at least one teammate is already engaged or pushing.
+      // Approximation: fire any time during live phase except opening.
+      return nowMs - ctx.liveSinceMs >= 4000;
+    case 'on_plant':
+      return ctx.bomb !== null && (ctx.bomb.phase === 'planted' || ctx.bomb.phase === 'defusing');
+  }
+}
+
+function angleDiff(a: number, b: number): number {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
 
 function onBombsite(ctx: BrainContext, x: number, y: number, z: number): boolean {
   for (const s of ctx.world.bombSites) {

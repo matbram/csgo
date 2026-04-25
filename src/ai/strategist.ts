@@ -17,6 +17,7 @@ import type { TeamBlackboard, BombInfo } from './blackboard';
 import { recordEvent } from './blackboard';
 import type { NavGrid } from '../nav/grid';
 import { PLANS, plansForSide, type EcoTier, type PlanDef, type Side, type StrategyId } from './plans';
+import { lineupsFor, type GrenadeLineup } from './grenadeLineups';
 
 const FULL_BUY_PER_PLAYER = 4500;
 const FORCE_BUY_PER_PLAYER = 2500;
@@ -128,6 +129,45 @@ function applyPlan(
       role: slot.role,
     });
   }
+
+  // Spread the plan's grenade lineups across the team's bots. Each
+  // lineup needs a bot that's near (or pathing toward) its fromCallout
+  // — the simplest stable rule is "assign the bot whose objective
+  // callout matches fromCallout, otherwise the closest unassigned bot
+  // by current pos." We give each bot at most one lineup; bots without
+  // one stick to plain pathing.
+  const lineups = lineupsFor(plan.id);
+  const assigned = new Set<string>();
+  for (const lu of lineups) {
+    const winner = pickBotForLineup(teamBots, bb, lu, assigned);
+    if (!winner) continue;
+    winner.brain.pendingLineup = lu;
+    assigned.add(winner.id);
+  }
+  // Bots that didn't pick up a lineup this round drop any stale one
+  // from the previous round.
+  for (const bot of teamBots) {
+    if (!assigned.has(bot.id)) bot.brain.pendingLineup = null;
+  }
+}
+
+function pickBotForLineup(
+  bots: ReadonlyArray<Bot>,
+  bb: TeamBlackboard,
+  lu: GrenadeLineup,
+  alreadyAssigned: ReadonlySet<string>,
+): Bot | null {
+  // First preference: a bot whose objective IS the lineup's
+  // fromCallout. They're already heading there.
+  for (const b of bots) {
+    if (alreadyAssigned.has(b.id)) continue;
+    const obj = bb.objectiveByBot.get(b.id);
+    if (obj?.callout === lu.fromCallout) return b;
+  }
+  // Fall back to whichever unassigned bot is closest to fromCallout
+  // right now. The bot will detour; brain Save / Engage / etc still
+  // override.
+  return bots.find(b => !alreadyAssigned.has(b.id)) ?? null;
 }
 
 /** Compute the team's eco tier from MatchPlayerSlots. */
