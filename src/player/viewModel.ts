@@ -42,93 +42,99 @@ interface SwingPose {
 
 const ZERO_SWING: SwingPose = { posX: 0, posY: 0, posZ: 0, rotX: 0, rotY: 0, rotZ: 0 };
 
-/** Hand-tuned three-phase melee curve. `dir` is +1/-1 to alternate slash
- *  direction across consecutive swings — purely cosmetic. */
+/** Hand-tuned three-phase slash curve. `dir` is +1/-1 to alternate the
+ *  slash side across consecutive swings — the knife arcs L→R then R→L.
+ *  Tuned to be unambiguously visible: the blade leaves the screen edge
+ *  during the strike before whipping back. */
 function swingCurve(t: number, dir: number): SwingPose {
   if (t >= 1) return ZERO_SWING;
-  if (t < 0.30) {
-    // Wind-up: pull back and up. k goes 0 → 1.
-    const k = t / 0.30;
+  if (t < 0.25) {
+    // Wind-up: pull the knife to the opposite side and tilt up.
+    const k = t / 0.25;
     return {
-      posX: -0.05 * k * dir,
-      posY:  0.04 * k,
-      posZ: -0.06 * k,
-      rotX: -0.55 * k,
-      rotY:  0.20 * k * dir,
-      rotZ:  0.30 * k * dir,
+      posX: -0.18 * k * dir,
+      posY:  0.08 * k,
+      posZ: -0.05 * k,
+      rotX: -0.70 * k,
+      rotY:  0.55 * k * dir,
+      rotZ:  0.80 * k * dir,
     };
   }
-  if (t < 0.55) {
-    // Strike: hard thrust forward + downward. k goes 0 → 1, fast.
-    const k = (t - 0.30) / 0.25;
+  if (t < 0.50) {
+    // Strike: hard arc across the screen + forward thrust. The blade
+    // sweeps from -0.18 to +0.30 horizontally — half the screen width.
+    const k = (t - 0.25) / 0.25;
     return {
-      posX: -0.05 * dir + 0.15 * k * dir,
-      posY:  0.04 - 0.10 * k,
-      posZ: -0.06 + 0.26 * k,
-      rotX: -0.55 + 0.95 * k,
-      rotY:  0.20 * dir - 0.40 * k * dir,
-      rotZ:  0.30 * dir - 0.55 * k * dir,
+      posX: -0.18 * dir + 0.48 * k * dir,
+      posY:  0.08 - 0.18 * k,
+      posZ: -0.05 + 0.30 * k,
+      rotX: -0.70 + 1.30 * k,
+      rotY:  0.55 * dir - 1.10 * k * dir,
+      rotZ:  0.80 * dir - 1.55 * k * dir,
     };
   }
-  // Recovery: ease back to neutral.
-  const k = 1 - (t - 0.55) / 0.45;
+  // Recovery: ease back to neutral over the longer second half.
+  const k = 1 - (t - 0.50) / 0.50;
   return {
-    posX: 0.10 * k * dir,
-    posY: -0.06 * k,
-    posZ: 0.20 * k,
-    rotX: 0.40 * k,
-    rotY: -0.20 * k * dir,
-    rotZ: -0.25 * k * dir,
+    posX:  0.30 * k * dir,
+    posY: -0.10 * k,
+    posZ:  0.25 * k,
+    rotX:  0.60 * k,
+    rotY: -0.55 * k * dir,
+    rotZ: -0.75 * k * dir,
   };
 }
 
-/** Stab curve: pull the knife back and slightly up, then thrust straight
- *  forward and hold briefly at full extension before recovering. There's
- *  no left/right component — a stab is committed and centered. */
+/** Stab curve: pull the knife back and up, then thrust straight forward
+ *  and hold briefly at full extension before recovering. No left/right
+ *  component — a stab is committed and centered. The forward thrust is
+ *  large (~40 cm) so the blade clearly punches forward past the camera. */
 function stabCurve(t: number): SwingPose {
   if (t >= 1) return ZERO_SWING;
   if (t < 0.25) {
-    // Wind-up: pull back and up, knife pitched up.
+    // Wind-up: pull back and up, knife pitched well up.
     const k = t / 0.25;
     return {
       posX: 0,
-      posY:  0.05 * k,
-      posZ: -0.10 * k,
-      rotX: -0.45 * k,
+      posY:  0.10 * k,
+      posZ: -0.18 * k,
+      rotX: -0.85 * k,
       rotY: 0,
       rotZ: 0,
     };
   }
-  if (t < 0.42) {
-    // Thrust: forward + slight downward, knife pitches level.
-    const k = (t - 0.25) / 0.17;
+  if (t < 0.45) {
+    // Thrust: hard forward + level out the blade. Goes past neutral so
+    // the knife clearly punches outward.
+    const k = (t - 0.25) / 0.20;
     return {
       posX: 0,
-      posY:  0.05 - 0.06 * k,
-      posZ: -0.10 + 0.32 * k,
-      rotX: -0.45 + 0.55 * k,
+      posY:  0.10 - 0.13 * k,
+      posZ: -0.18 + 0.58 * k,
+      rotX: -0.85 + 1.05 * k,
       rotY: 0,
       rotZ: 0,
     };
   }
-  if (t < 0.58) {
-    // Hold at full extension — sells the impact.
+  if (t < 0.60) {
+    // Hold at full extension — sells the impact and gives the player
+    // a clear "the knife is OUT" frame.
     return {
       posX: 0,
-      posY: -0.01,
-      posZ:  0.22,
-      rotX:  0.10,
+      posY: -0.03,
+      posZ:  0.40,
+      rotX:  0.20,
       rotY: 0,
       rotZ: 0,
     };
   }
   // Recovery: ease back.
-  const k = 1 - (t - 0.58) / 0.42;
+  const k = 1 - (t - 0.60) / 0.40;
   return {
     posX: 0,
-    posY: -0.01 * k,
-    posZ:  0.22 * k,
-    rotX:  0.10 * k,
+    posY: -0.03 * k,
+    posZ:  0.40 * k,
+    rotX:  0.20 * k,
     rotY: 0,
     rotZ: 0,
   };

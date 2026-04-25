@@ -326,7 +326,9 @@ export function installAudio(): void {
   installed = true;
 
   events.on('combat:fire', ({ shooterId, weapon, ox, oy, oz }) => {
-    const id = `${weapon}_fire`;
+    // The knife uses a swing whoosh, not a gunshot. Other weapons use the
+    // synthesized `<id>_fire` buffer keyed off the WeaponDef.
+    const id = weapon === 'knife' ? 'knife_swing' : `${weapon}_fire`;
     if (shooterId === 'local') {
       playSound(id, { volume: 0.9 });
     } else {
