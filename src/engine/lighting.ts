@@ -3,6 +3,11 @@
  *  capture the sky into an environment texture for IBL on PBR materials,
  *  but for M1 we use a simple `HemisphericLight` for ambient. */
 
+// Babylon's à-la-carte build needs side-effect imports for components that
+// register themselves with the scene at construction time. Without these,
+// shadow rendering throws "ShadowGeneratorSceneComponent needs to be imported".
+import '@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent';
+
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';

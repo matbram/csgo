@@ -2,6 +2,11 @@
  *  Wired to the scene's active camera. The pipeline is created after the
  *  player camera exists so that `cameras` references are valid. */
 
+// Side-effect: register the post-process pipeline manager scene component.
+// Without this, `scene.postProcessRenderPipelineManager` is undefined and
+// constructing any pipeline throws.
+import '@babylonjs/core/PostProcesses/RenderPipeline/postProcessRenderPipelineManagerSceneComponent';
+
 import { DefaultRenderingPipeline } from '@babylonjs/core/PostProcesses/RenderPipeline/Pipelines/defaultRenderingPipeline';
 import { ImageProcessingConfiguration } from '@babylonjs/core/Materials/imageProcessingConfiguration';
 import { Color4 } from '@babylonjs/core/Maths/math.color';
