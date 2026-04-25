@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CS:GO Clone — Dust 2</title>
+    <link rel="stylesheet" href="/src/hud/hud.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="render-canvas"></canvas>
+      <div id="hud-root" aria-hidden="true"></div>
+      <div id="overlay-root">
+        <div id="start-overlay">
+          <div class="title">DUST&nbsp;II</div>
+          <div class="subtitle">Click to play. Mouse to look. WASD to move. Shift to walk. Ctrl to crouch. Space to jump. F3 to toggle debug.</div>
+          <button id="start-button" type="button">Click to play</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
