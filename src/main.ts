@@ -110,7 +110,11 @@ function bootstrap(): void {
   const bots: Bot[] = [];
   for (let i = 0; i < 4; i++) {
     const sp = tSpawns[(i + 1) % Math.max(1, tSpawns.length)] ?? startSpawn!;
-    const bot = createBot('T', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, { id: `t-bot-${i + 1}` });
+    const bot = createBot('T', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, {
+      id: `t-bot-${i + 1}`,
+      teamIndex: i,
+      difficulty: 'medium',
+    });
     bots.push(bot);
     characters.push(bot.character);
   }
@@ -118,7 +122,11 @@ function bootstrap(): void {
   for (let i = 0; i < 5; i++) {
     const sp = ctSpawns[i % Math.max(1, ctSpawns.length)] ?? ctSpawns[0]!;
     if (!sp) throw new Error('No CT spawns authored');
-    const bot = createBot('CT', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, { id: `ct-bot-${i + 1}` });
+    const bot = createBot('CT', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, {
+      id: `ct-bot-${i + 1}`,
+      teamIndex: i,
+      difficulty: 'medium',
+    });
     bots.push(bot);
     characters.push(bot.character);
   }
@@ -187,6 +195,10 @@ function bootstrap(): void {
     const ctBots: Bot[] = [];
     for (const bot of bots) {
       snapBotToCharacterPose(bot);
+      // Pass 2: give every bot a side-appropriate primary at round start
+      // so they have teeth to engage with. Pass 3 replaces this with the
+      // proper buy logic that respects each bot's economy.
+      ensureBotPrimary(bot);
       if (bot.character.team === 'T') tBots.push(bot);
       else ctBots.push(bot);
     }
@@ -200,6 +212,14 @@ function bootstrap(): void {
       const o = ctObj[i]!;
       setBotObjective(ctBots[i]!, o.x, o.z);
     }
+  };
+
+  const ensureBotPrimary = (bot: Bot): void => {
+    if (!bot.character.inventory) return;
+    if (bot.character.inventory.primary) return;
+    const id = bot.character.team === 'T' ? 'ak47' : 'm4a4';
+    bot.character.inventory.primary = makeInstance(id);
+    bot.character.inventory.active = 'primary';
   };
 
   // First round. Reset everyone first so beginRound's carrier pick sees
@@ -388,12 +408,29 @@ function bootstrap(): void {
       viewModel.setReloading(activeInst.state === 'reloading');
     }
 
-    // Step the bots. They follow A* paths to their objectives — no
-    // perception or combat yet (Pass 2). Movement is gated on the round
-    // being live; during freeze they stand at spawn.
+    // Step bot AI: perception → decision → aim/fire → movement. Gated on
+    // round phase: during freeze they stand at spawn; during the live
+    // phase they engage and path. Brain.step decides if the bot wants to
+    // hold ground (engage / reload) or follow its path; we surface that
+    // decision into stepBot so the controller stays the single source of
+    // truth for movement.
     if (match.round?.phase === 'live') {
       for (const bot of bots) {
-        stepBot(bot, dtMs, time.simMs, pathService);
+        if (!bot.character.alive) continue;
+        bot.perception.maybeStep(bot.character, characters, query, time.simMs);
+        const decision = bot.brain.step(bot, bot.perception, { characters }, firing, dtMs, time.simMs);
+        stepBot(bot, dtMs, time.simMs, pathService, {
+          followPath: decision.followPath,
+          // While engaging the brain owns yaw; let it through unmodified.
+          faceMovement: decision.followPath,
+        });
+      }
+    } else {
+      // Freeze / round-end: still tick perception so KnownEnemies decay
+      // and bots are ready to engage the moment freeze ends.
+      for (const bot of bots) {
+        if (!bot.character.alive) continue;
+        bot.perception.maybeStep(bot.character, characters, query, time.simMs);
       }
     }
 

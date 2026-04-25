@@ -1,0 +1,341 @@
+/** Per-bot "brain" — picks one of a handful of high-level actions every
+ *  ~200 ms (utility selector with hysteresis), and runs that action's
+ *  per-tick logic every sim tick (aim, fire, reload, walk).
+ *
+ *  Actions in Pass 2:
+ *    Engage         — face the best known enemy, fire when on target
+ *    Reload         — out of combat with a low mag → R
+ *    MoveToObjective — follow the A* path the path service produced
+ *    Idle           — final fallback when there's no path and no enemy
+ *
+ *  Pass 3 adds Plant / Defuse, fed in through the existing match-step
+ *  intent struct so the bomb FSM doesn't need to know who's a bot. */
+
+import type { Bot } from '../entities/bot';
+import type { Character } from '../entities/character';
+import { hitboxPose } from '../entities/character';
+import type { FiringController } from '../combat/firing';
+import type { Perception, KnownEnemy } from './perception';
+import type { BotDifficulty } from './difficulty';
+import { activeInstance } from '../weapons/inventory';
+
+export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload';
+
+const DECISION_INTERVAL_MS = 200;     // 5 Hz
+/** Bonus utility for the action that's already running so we don't
+ *  flip-flop between Engage and MoveToObjective every decision tick. */
+const HYSTERESIS = 5;
+
+export interface BrainContext {
+  /** All characters in the world (so the brain can resolve a known-enemy
+   *  id back to the live Character record for current-tick chest pos). */
+  characters: Character[];
+}
+
+export class Brain {
+  state: BrainState = 'idle';
+  /** Sim ms of the last action transition — used by callers for debug. */
+  stateChangedMs = 0;
+  private nextDecisionMs = 0;
+
+  /** Engagement bookkeeping. */
+  private engageId: string | null = null;
+  private engageStartMs = 0;
+  /** Aim noise sample, refreshed per `aimNoiseResampleMs` window. */
+  private noiseYawDeg = 0;
+  private noisePitchDeg = 0;
+  private noiseUntilMs = 0;
+  /** Whether the last tick actually pulled the trigger (used for trigger
+   *  edges on semi/bolt weapons). */
+  private firedLastTick = false;
+
+  constructor(
+    private readonly difficulty: BotDifficulty,
+    phaseMs: number,
+  ) {
+    this.nextDecisionMs = phaseMs;
+  }
+
+  /** Per sim-tick step. Returns an indication of whether the brain wants
+   *  the bot to follow its A* path this tick. */
+  step(
+    bot: Bot,
+    perception: Perception,
+    ctx: BrainContext,
+    firing: FiringController,
+    dtMs: number,
+    nowMs: number,
+  ): { followPath: boolean } {
+    if (nowMs >= this.nextDecisionMs) {
+      this.nextDecisionMs = nowMs + DECISION_INTERVAL_MS;
+      this.decide(bot, perception, nowMs);
+    }
+
+    // Resample aim noise on its own clock.
+    if (nowMs >= this.noiseUntilMs) {
+      this.noiseYawDeg = gaussian() * this.difficulty.aimErrorDeg;
+      this.noisePitchDeg = gaussian() * this.difficulty.aimErrorDeg;
+      this.noiseUntilMs = nowMs + this.difficulty.aimNoiseResampleMs;
+    }
+
+    let followPath = true;
+    switch (this.state) {
+      case 'engage':
+        followPath = false;
+        this.runEngage(bot, perception, ctx, firing, dtMs, nowMs);
+        break;
+      case 'reload':
+        followPath = false;
+        this.runReload(bot, firing, nowMs);
+        break;
+      case 'movetoObj':
+        // Movement happens via stepBot's path follower. Brain only feeds a
+        // null fire input so weapon state ticks normally (deploy + reload
+        // timers still need firing.step to advance them).
+        this.runIdleFire(bot, firing, nowMs);
+        break;
+      case 'idle':
+      default:
+        this.runIdleFire(bot, firing, nowMs);
+        break;
+    }
+
+    return { followPath };
+  }
+
+  // ---- Decision ------------------------------------------------------
+
+  private decide(bot: Bot, perception: Perception, nowMs: number): void {
+    const target = perception.bestTarget(bot.character.pos.x, bot.character.pos.z);
+    const inst = bot.character.inventory ? activeInstance(bot.character.inventory) : null;
+
+    const u = {
+      engage: 0,
+      reload: 0,
+      moveto: 0,
+      idle: 0,
+    };
+
+    if (target && target.confidence === 'visible' && inst && inst.def.fireMode !== 'planted') {
+      const ammoOk = inst.def.magazine === 0 || inst.ammoMag > 0;
+      u.engage = ammoOk ? 100 : 0;
+    } else if (target && target.confidence === 'recent' && inst && inst.def.fireMode !== 'planted') {
+      // We saw them recently — point in their direction but don't fire blind.
+      u.engage = 30;
+    }
+
+    if (inst && inst.def.magazine > 0) {
+      const magFrac = inst.ammoMag / inst.def.magazine;
+      if (magFrac <= this.difficulty.reloadAtMagFraction && inst.ammoReserve > 0 && !perception.hasVisible()) {
+        u.reload = 60;
+      }
+    }
+
+    if (bot.path && bot.path.length > 0 && bot.pathIdx < bot.path.length) {
+      u.moveto = 40;
+    } else if (bot.objective) {
+      u.moveto = 25;       // we want a path but don't have one yet
+    }
+
+    u.idle = 5;
+
+    if (this.state) {
+      switch (this.state) {
+        case 'engage':    u.engage += HYSTERESIS; break;
+        case 'reload':    u.reload += HYSTERESIS; break;
+        case 'movetoObj': u.moveto += HYSTERESIS; break;
+        case 'idle':      u.idle += HYSTERESIS; break;
+      }
+    }
+
+    let next: BrainState = 'idle';
+    let bestU = u.idle;
+    if (u.engage > bestU) { next = 'engage'; bestU = u.engage; }
+    if (u.reload > bestU) { next = 'reload'; bestU = u.reload; }
+    if (u.moveto > bestU) { next = 'movetoObj'; bestU = u.moveto; }
+
+    if (next !== this.state) {
+      this.state = next;
+      this.stateChangedMs = nowMs;
+      if (next === 'engage') {
+        // Acquired a target — start the reaction timer.
+        this.engageId = target?.id ?? null;
+        this.engageStartMs = nowMs;
+      } else {
+        this.engageId = null;
+      }
+    }
+
+    // If we're already engaging but the active enemy id changed, reset
+    // the reaction timer — swinging onto a new target shouldn't fire
+    // instantly.
+    if (next === 'engage' && target && target.id !== this.engageId) {
+      this.engageId = target.id;
+      this.engageStartMs = nowMs;
+    }
+  }
+
+  // ---- Action execution ---------------------------------------------
+
+  private runEngage(
+    bot: Bot,
+    perception: Perception,
+    ctx: BrainContext,
+    firing: FiringController,
+    _dtMs: number,
+    nowMs: number,
+  ): void {
+    if (!this.engageId || !bot.character.inventory) {
+      this.runIdleFire(bot, firing, nowMs);
+      return;
+    }
+    // Resolve the engage target's current chest pos. If the live character
+    // is dead/missing we fall back to the last-known position from
+    // perception.known so the bot still finishes its swing onto cover.
+    const live = ctx.characters.find(c => c.id === this.engageId);
+    let tx: number, ty: number, tz: number;
+    let aimingAtKnown = false;
+    if (live && live.alive) {
+      const pose = hitboxPose(live);
+      tx = pose.baseX;
+      ty = pose.baseY + pose.eye * 0.6;
+      tz = pose.baseZ;
+    } else {
+      const known = perception.known.get(this.engageId);
+      if (!known) {
+        this.runIdleFire(bot, firing, nowMs);
+        return;
+      }
+      tx = known.x; ty = known.y; tz = known.z;
+      aimingAtKnown = true;
+    }
+
+    // Compute desired yaw/pitch from eye → target.
+    const eyeX = bot.character.pos.x;
+    const eyeY = bot.character.pos.y + bot.character.currentEye;
+    const eyeZ = bot.character.pos.z;
+    const dx = tx - eyeX;
+    const dy = ty - eyeY;
+    const dz = tz - eyeZ;
+    const horiz = Math.hypot(dx, dz);
+    const targetYaw = Math.atan2(dx, dz) + degToRad(this.noiseYawDeg);
+    const targetPitch = Math.atan2(dy, horiz) + degToRad(this.noisePitchDeg);
+
+    // Smooth current aim toward target. The controller's yaw/pitch IS the
+    // bot's aim in our model — there's no separate eye-vs-body track yet.
+    const k = 1 - Math.exp(-_dtMs / Math.max(1, this.difficulty.trackingLagMs));
+    bot.controller.state.yaw = lerpAngle(bot.controller.state.yaw, targetYaw, k);
+    bot.controller.state.pitch = clampPitch(
+      bot.controller.state.pitch + (targetPitch - bot.controller.state.pitch) * k,
+    );
+    bot.character.yaw = bot.controller.state.yaw;
+    bot.character.pitch = bot.controller.state.pitch;
+
+    // Decide whether to pull the trigger.
+    const reactionElapsed = nowMs - this.engageStartMs >= this.difficulty.reactionMs;
+    const aimErrorDeg = aimErrorDegrees(
+      bot.controller.state.yaw, bot.controller.state.pitch,
+      Math.atan2(dx, dz), Math.atan2(dy, horiz),
+    );
+    const onTarget = aimErrorDeg <= this.difficulty.fireAimToleranceDeg;
+    const shouldFire = reactionElapsed && onTarget && !aimingAtKnown;
+
+    const inst = activeInstance(bot.character.inventory);
+    const fireMode = inst.def.fireMode;
+    let triggerHeld = false;
+    let triggerEdge = false;
+    if (shouldFire) {
+      if (fireMode === 'auto') {
+        triggerHeld = true;
+      } else if (fireMode === 'semi' || fireMode === 'bolt' || fireMode === 'burst' || fireMode === 'melee') {
+        // Pulse the trigger: edge once, off the next sim tick. The firing
+        // controller's per-shot rate-limit covers cadence.
+        triggerEdge = !this.firedLastTick;
+      }
+    }
+
+    const aim = aimRequest(bot, fireMode);
+    const result = firing.step(nowMs, bot.character, inst, aim, {
+      triggerHeld,
+      triggerEdge,
+      reloadEdge: false,
+      secondaryEdge: false,
+    });
+    this.firedLastTick = result !== 'none';
+  }
+
+  private runReload(bot: Bot, firing: FiringController, nowMs: number): void {
+    if (!bot.character.inventory) return;
+    const inst = activeInstance(bot.character.inventory);
+    const reloadEdge = inst.state === 'ready' || inst.state === 'empty';
+    const aim = aimRequest(bot, inst.def.fireMode);
+    firing.step(nowMs, bot.character, inst, aim, {
+      triggerHeld: false,
+      triggerEdge: false,
+      reloadEdge,
+      secondaryEdge: false,
+    });
+    this.firedLastTick = false;
+  }
+
+  /** "Idle fire" is a misnomer — we just step the firing controller with
+   *  no input so deploy / reload timers continue advancing. Without this
+   *  call, a bot that switches weapons mid-path never finishes its deploy. */
+  private runIdleFire(bot: Bot, firing: FiringController, nowMs: number): void {
+    if (!bot.character.inventory) return;
+    const inst = activeInstance(bot.character.inventory);
+    const aim = aimRequest(bot, inst.def.fireMode);
+    firing.step(nowMs, bot.character, inst, aim, {
+      triggerHeld: false,
+      triggerEdge: false,
+      reloadEdge: false,
+      secondaryEdge: false,
+    });
+    this.firedLastTick = false;
+  }
+}
+
+// ---- Helpers --------------------------------------------------------
+
+function aimRequest(bot: Bot, _mode: string): { ox: number; oy: number; oz: number; fwdX: number; fwdY: number; fwdZ: number } {
+  const yaw = bot.controller.state.yaw;
+  const pitch = bot.controller.state.pitch;
+  const cosP = Math.cos(pitch);
+  return {
+    ox: bot.character.pos.x,
+    oy: bot.character.pos.y + bot.character.currentEye,
+    oz: bot.character.pos.z,
+    fwdX: Math.sin(yaw) * cosP,
+    fwdY: Math.sin(pitch),
+    fwdZ: Math.cos(yaw) * cosP,
+  };
+}
+
+function degToRad(d: number): number { return d * Math.PI / 180; }
+
+/** Approximate 0-mean gaussian via Box-Muller half-step (one sample). */
+function gaussian(): number {
+  const u = 1 - Math.random();
+  const v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v) * 0.5;
+}
+
+function lerpAngle(a: number, b: number, k: number): number {
+  let diff = b - a;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return a + diff * k;
+}
+
+const PITCH_LIMIT = Math.PI / 2 - 0.02;
+function clampPitch(p: number): number {
+  return p < -PITCH_LIMIT ? -PITCH_LIMIT : p > PITCH_LIMIT ? PITCH_LIMIT : p;
+}
+
+function aimErrorDegrees(curYaw: number, curPitch: number, tgtYaw: number, tgtPitch: number): number {
+  let dy = tgtYaw - curYaw;
+  while (dy > Math.PI) dy -= Math.PI * 2;
+  while (dy < -Math.PI) dy += Math.PI * 2;
+  const dp = tgtPitch - curPitch;
+  return Math.hypot(dy, dp) * 180 / Math.PI;
+}

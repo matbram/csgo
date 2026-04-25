@@ -19,6 +19,9 @@ import {
 } from './humanoid';
 import type { PathPoint } from '../nav/astar';
 import type { PathService } from '../nav/pathService';
+import { Perception } from '../ai/perception';
+import { Brain } from '../ai/brain';
+import { getDifficulty, withVariance, type DifficultyId } from '../ai/difficulty';
 
 /** Distance to a waypoint at which we consider it reached and advance to
  *  the next one. A bit larger than a cell so bots don't hover on each
@@ -41,15 +44,29 @@ export interface Bot {
   /** Sim ms of the next allowed path request. Used to backoff after a
    *  failed request. */
   nextPlanAfterMs: number;
+  /** AI brain + perception. Bots without this are pure path-followers
+   *  (Pass 1 behaviour) — useful for tests and for bots that haven't
+   *  been promoted to "active" yet. */
+  perception: Perception;
+  brain: Brain;
 }
 
 let nextBotId = 1;
+
+export interface CreateBotOpts {
+  id?: string;
+  armor?: number;
+  helmet?: boolean;
+  difficulty?: DifficultyId;
+  /** Stable per-team index (0..4) used for variance + perception stagger. */
+  teamIndex?: number;
+}
 
 export function createBot(
   team: 'T' | 'CT',
   spawnX: number, spawnY: number, spawnZ: number, spawnYaw: number,
   query: WorldQuery,
-  opts?: { id?: string; armor?: number; helmet?: boolean },
+  opts?: CreateBotOpts,
 ): Bot {
   const id = opts?.id ?? `${team.toLowerCase()}-bot-${nextBotId++}`;
   const parts = createHumanoid(team, id);
@@ -76,6 +93,15 @@ export function createBot(
     crouching: false,
   };
   syncHumanoidPose(parts, character.pos.x, character.pos.y, character.pos.z, character.yaw, character.currentEye, character.currentHeight);
+
+  const teamIdx = opts?.teamIndex ?? 0;
+  const difficulty = withVariance(getDifficulty(opts?.difficulty ?? 'medium'), teamIdx);
+  // Stagger perception + decision phases by team index so 9 bots don't
+  // all tick on the same sim frame. With 9 bots and ~100 ms perception,
+  // an 11 ms phase per bot spreads them evenly across one tick window.
+  const phaseMs = teamIdx * 11;
+  const perception = new Perception(difficulty, phaseMs);
+  const brain = new Brain(difficulty, phaseMs);
   return {
     id,
     character,
@@ -85,6 +111,8 @@ export function createBot(
     pathIdx: 0,
     objective: null,
     nextPlanAfterMs: 0,
+    perception,
+    brain,
   };
 }
 
@@ -115,13 +143,25 @@ export function setBotObjective(bot: Bot, x: number, z: number): void {
 
 /** Per sim-tick step: request a path if needed, walk along it, step the
  *  controller, mirror state into the Character record. Dead bots are a
- *  no-op (they keep their ragdoll-tipped pose). */
-export function stepBot(bot: Bot, dtMs: number, nowMs: number, paths: PathService): void {
+ *  no-op (they keep their ragdoll-tipped pose).
+ *
+ *  When `followPath` is false (the brain wants the bot to hold its
+ *  ground while engaging or reloading), the bot still steps the
+ *  controller so gravity / friction still apply, but with wishDir = 0. */
+export function stepBot(
+  bot: Bot,
+  dtMs: number,
+  nowMs: number,
+  paths: PathService,
+  opts?: { followPath?: boolean; faceMovement?: boolean },
+): void {
   if (!bot.character.alive) {
     bot.character.speed = 0;
     bot.character.inAir = false;
     return;
   }
+  const followPath = opts?.followPath ?? true;
+  const faceMovement = opts?.faceMovement ?? true;
 
   // Plan a path if we have an objective but no route yet.
   if (bot.objective && (!bot.path || bot.path.length === 0) && nowMs >= bot.nextPlanAfterMs) {
@@ -140,9 +180,10 @@ export function stepBot(bot: Bot, dtMs: number, nowMs: number, paths: PathServic
     }
   }
 
-  // Compute wishDir toward the current waypoint.
+  // Compute wishDir toward the current waypoint, unless the caller has
+  // suppressed path following (e.g. the bot is engaging an enemy).
   let wishX = 0, wishZ = 0;
-  if (bot.path && bot.pathIdx < bot.path.length) {
+  if (followPath && bot.path && bot.pathIdx < bot.path.length) {
     const wp = bot.path[bot.pathIdx]!;
     const dx = wp.x - bot.controller.state.pos.x;
     const dz = wp.z - bot.controller.state.pos.z;
@@ -168,8 +209,9 @@ export function stepBot(bot: Bot, dtMs: number, nowMs: number, paths: PathServic
     }
   }
 
-  // Face the movement direction. With no movement, keep last yaw.
-  if (wishX !== 0 || wishZ !== 0) {
+  // Face the movement direction unless the brain owns the yaw this tick
+  // (e.g. while engaging — the brain points the bot at the enemy).
+  if (faceMovement && (wishX !== 0 || wishZ !== 0)) {
     const desiredYaw = Math.atan2(wishX, wishZ);
     bot.controller.state.yaw = smoothYaw(bot.controller.state.yaw, desiredYaw, dtMs);
   }
