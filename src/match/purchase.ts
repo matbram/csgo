@@ -28,17 +28,39 @@ export function purchaseWeapon(
     return { ok: false, reason: 'No inventory slot.' };
   }
   const inv = character.inventory;
-  const slotKey: 'primary' | 'secondary' | 'knife' | 'c4' =
+  const slotKey: 'primary' | 'secondary' | 'knife' | 'c4' | 'grenade' =
     def.slot === 'primary' ? 'primary' :
     def.slot === 'secondary' ? 'secondary' :
     def.slot === 'knife' ? 'knife' :
     def.slot === 'c4' ? 'c4' :
+    def.slot === 'grenade' ? 'grenade' :
     'secondary';
 
-  // Don't allow re-buying the exact same weapon already in slot.
-  const existing = inv[slotKey];
-  if (existing && existing.def.id === weaponId) {
-    return { ok: false, reason: 'Already owned.' };
+  // Don't allow re-buying the exact same weapon already in slot —
+  // except for grenades, which stack (with their own caps below).
+  if (slotKey !== 'grenade') {
+    const existing = inv[slotKey];
+    if (existing && existing.def.id === weaponId) {
+      return { ok: false, reason: 'Already owned.' };
+    }
+  }
+
+  // Grenades stack — each purchase appends a new instance to the
+  // grenade array. CS:GO caps the total carry at 4 grenades (max 2
+  // flashbangs, 1 of every other type) — we enforce that here so the
+  // buy menu can stay simple.
+  if (slotKey === 'grenade') {
+    if (inv.grenades.length >= 4) {
+      return { ok: false, reason: 'Grenade carry limit (4) reached.' };
+    }
+    const sameKind = inv.grenades.filter(g => g.def.id === weaponId).length;
+    const cap = weaponId === 'flashbang' ? 2 : 1;
+    if (sameKind >= cap) {
+      return { ok: false, reason: `Already carrying ${cap}.` };
+    }
+    inv.grenades.push(makeInstance(weaponId));
+    slot.money -= def.cost;
+    return { ok: true };
   }
 
   inv[slotKey] = makeInstance(weaponId);

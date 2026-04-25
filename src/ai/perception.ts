@@ -11,6 +11,7 @@ import type { Character } from '../entities/character';
 import { hitboxPose } from '../entities/character';
 import type { WorldQuery } from '../player/physics';
 import type { BotDifficulty } from './difficulty';
+import type { SmokeField } from '../grenades/smokeField';
 
 export type EnemyConfidence = 'visible' | 'recent' | 'sound';
 
@@ -40,7 +41,7 @@ export class Perception {
   }
 
   /** Check if this perception tick should run now and run it if so. */
-  maybeStep(self: Character, characters: Character[], query: WorldQuery, nowMs: number): void {
+  maybeStep(self: Character, characters: Character[], query: WorldQuery, nowMs: number, smoke?: SmokeField | null): void {
     if (nowMs < this.nextTickMs) {
       // Still apply confidence decay every frame so 'visible' → 'recent'
       // happens promptly when the target ducks behind cover.
@@ -48,7 +49,7 @@ export class Perception {
       return;
     }
     this.nextTickMs = nowMs + PERCEPTION_INTERVAL_MS;
-    this.tick(self, characters, query, nowMs);
+    this.tick(self, characters, query, nowMs, smoke);
   }
 
   /** Closest currently-known enemy that we'd actually engage. Prefers
@@ -88,8 +89,17 @@ export class Perception {
     this.known.set(id, { id, x, y, z, lastSeenMs: nowMs, confidence: 'sound' });
   }
 
-  private tick(self: Character, characters: Character[], query: WorldQuery, nowMs: number): void {
+  private tick(self: Character, characters: Character[], query: WorldQuery, nowMs: number, smoke?: SmokeField | null): void {
     this.currentlyVisible.clear();
+    // A flashed bot can't see anything new this tick — they keep their
+    // last-known intel but visibility decays as if nobody was in sight.
+    // The flash duration also drops their effective FOV / range, but
+    // for this pass an all-or-nothing block is enough to make a flash
+    // tactically meaningful.
+    if (self.flashedUntilMs !== undefined && nowMs < self.flashedUntilMs) {
+      this.decay(nowMs);
+      return;
+    }
     const eyeX = self.pos.x;
     const eyeY = self.pos.y + self.currentEye;
     const eyeZ = self.pos.z;
@@ -124,6 +134,13 @@ export class Perception {
       const ndx = dx * inv, ndy = dy * inv, ndz = dz * inv;
       const blocker = query.rayWorld(eyeX, eyeY, eyeZ, ndx, ndy, ndz, dist - 0.05);
       if (blocker) continue;
+      // Smoke chord: if the cumulative chord through any active smoke
+      // exceeds the field's threshold before reaching the target, the
+      // bot can't see them this tick.
+      if (smoke) {
+        const blockT = smoke.blockingT(eyeX, eyeY, eyeZ, ndx, ndy, ndz, dist - 0.05);
+        if (blockT !== null) continue;
+      }
       // Visible.
       this.currentlyVisible.add(c.id);
       this.known.set(c.id, {

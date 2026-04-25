@@ -39,13 +39,18 @@ export function makeInstance(id: WeaponId, opts?: { mag?: number; reserve?: numb
   };
 }
 
-export type InventorySlotKey = 'primary' | 'secondary' | 'knife' | 'c4';
+export type InventorySlotKey = 'primary' | 'secondary' | 'knife' | 'c4' | 'grenade';
 
 export interface Inventory {
   primary?: WeaponInstance;
   secondary?: WeaponInstance;
   knife: WeaponInstance;
   c4?: WeaponInstance;
+  /** Grenade stack. Each entry is a single thrown round. The active
+   *  index points at the one that gets equipped first when the
+   *  player switches to slot='grenade'. Empty array = no grenades. */
+  grenades: WeaponInstance[];
+  activeGrenadeIdx: number;
   /** Currently-active slot. Always points to a present instance. */
   active: InventorySlotKey;
 }
@@ -54,6 +59,8 @@ export function defaultInventory(team: 'T' | 'CT'): Inventory {
   const inv: Inventory = {
     knife: makeInstance('knife'),
     secondary: makeInstance(team === 'T' ? 'glock18' : 'usp_s'),
+    grenades: [],
+    activeGrenadeIdx: 0,
     active: 'secondary',
   };
   return inv;
@@ -65,7 +72,32 @@ export function activeInstance(inv: Inventory): WeaponInstance {
     case 'secondary': return inv.secondary ?? inv.knife;
     case 'knife': return inv.knife;
     case 'c4': return inv.c4 ?? inv.knife;
+    case 'grenade': return inv.grenades[inv.activeGrenadeIdx] ?? inv.secondary ?? inv.knife;
   }
+}
+
+/** Total grenade count across all types. */
+export function grenadeCount(inv: Inventory): number {
+  return inv.grenades.length;
+}
+
+/** Drop the active grenade after a successful throw. Picks a sensible
+ *  follow-up slot: another grenade if present, otherwise the player's
+ *  primary → secondary → knife. */
+export function consumeActiveGrenade(inv: Inventory): InventorySlotKey {
+  const idx = inv.activeGrenadeIdx;
+  if (idx >= 0 && idx < inv.grenades.length) {
+    inv.grenades.splice(idx, 1);
+  }
+  if (inv.grenades.length > 0) {
+    inv.activeGrenadeIdx = Math.min(idx, inv.grenades.length - 1);
+    return 'grenade';
+  }
+  inv.activeGrenadeIdx = 0;
+  if (inv.primary) { inv.active = 'primary'; return 'primary'; }
+  if (inv.secondary) { inv.active = 'secondary'; return 'secondary'; }
+  inv.active = 'knife';
+  return 'knife';
 }
 
 /** Best non-knife slot, in priority: primary > secondary > knife. */
@@ -76,8 +108,9 @@ export function bestSlot(inv: Inventory): InventorySlotKey {
 }
 
 /** Canonical scroll-wheel cycle order. Matches CS:GO: primary, secondary,
- *  knife, c4. Slots without an instance are skipped at cycle time. */
-const SCROLL_ORDER: ReadonlyArray<InventorySlotKey> = ['primary', 'secondary', 'knife', 'c4'];
+ *  knife, grenade, c4. Slots without an instance are skipped at cycle
+ *  time. */
+const SCROLL_ORDER: ReadonlyArray<InventorySlotKey> = ['primary', 'secondary', 'knife', 'grenade', 'c4'];
 
 function slotInstance(inv: Inventory, slot: InventorySlotKey): WeaponInstance | undefined {
   switch (slot) {
@@ -85,6 +118,7 @@ function slotInstance(inv: Inventory, slot: InventorySlotKey): WeaponInstance | 
     case 'secondary': return inv.secondary;
     case 'knife': return inv.knife;
     case 'c4': return inv.c4;
+    case 'grenade': return inv.grenades[inv.activeGrenadeIdx];
   }
 }
 
@@ -113,9 +147,23 @@ export function switchTo(inv: Inventory, slot: InventorySlotKey, nowMs: number):
     case 'secondary': inst = inv.secondary; break;
     case 'knife': inst = inv.knife; break;
     case 'c4': inst = inv.c4; break;
+    case 'grenade': inst = inv.grenades[inv.activeGrenadeIdx]; break;
   }
   if (!inst) return false;
-  if (inv.active === slot) return false;
+  if (inv.active === slot) {
+    // Pressing 4 again while grenades are active cycles through the
+    // stack — same UX you'd get from invnext on a single key in CS:GO.
+    if (slot === 'grenade' && inv.grenades.length > 1) {
+      inv.activeGrenadeIdx = (inv.activeGrenadeIdx + 1) % inv.grenades.length;
+      const cycled = inv.grenades[inv.activeGrenadeIdx]!;
+      cycled.state = 'deploying';
+      cycled.stateUntilMs = nowMs + cycled.def.deployMs;
+      cycled.sprayIndex = 0;
+      cycled.scopeLevel = 0;
+      return true;
+    }
+    return false;
+  }
   // Drop scope on the outgoing weapon.
   const outgoing = activeInstance(inv);
   if (outgoing) outgoing.scopeLevel = 0;

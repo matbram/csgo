@@ -32,7 +32,7 @@ import { LocalPlayer } from './player/localPlayer';
 import { ViewModel } from './player/viewModel';
 import { CombatSystem } from './combat/combat';
 import { FiringController } from './combat/firing';
-import { activeInstance, switchTo, makeInstance, cycleScope, nextScrollSlot } from './weapons/inventory';
+import { activeInstance, switchTo, makeInstance, cycleScope, nextScrollSlot, consumeActiveGrenade } from './weapons/inventory';
 import { runBotBuy } from './ai/buy';
 import type { WeaponInstance } from './weapons/inventory';
 import { installCombatVisuals } from './combat/visuals';
@@ -40,6 +40,9 @@ import { installAudio, ensureAudioContext, setListenerPose, playSound } from './
 import { CombatHud } from './hud/combatHud';
 import { ScopeHud } from './hud/scopeHud';
 import { AiDebugHud } from './hud/aiDebug';
+import { FlashOverlay } from './hud/flashOverlay';
+import { GrenadeSystem } from './grenades/system';
+import { installGrenadeVisuals } from './grenades/visuals';
 import { createBot, snapBotToCharacterPose, setBotObjective, stepBot, syncBotMesh, type Bot } from './entities/bot';
 import { NavGrid } from './nav/grid';
 import { PathService } from './nav/pathService';
@@ -99,10 +102,15 @@ function bootstrap(): void {
 
   // 6) Combat + audio + visuals
   const characters: Character[] = [localPlayer.character];
-  const combatSystem = new CombatSystem(query, () => characters);
+  // Grenade system + smoke field. The smoke field doubles as a vision
+  // occluder for combat hits and bot perception, so we instantiate it
+  // BEFORE the combat system / before bot brains tick.
+  const grenadeSystem = new GrenadeSystem(world, query, () => characters);
+  const combatSystem = new CombatSystem(query, () => characters, grenadeSystem.smoke);
   const firing = new FiringController(combatSystem);
   installAudio();
   installCombatVisuals();
+  installGrenadeVisuals(grenadeSystem);
 
   // 6.5) Nav grid + path service. Built once at boot — Dust 2 is static
   // and the grid is small enough to bake synchronously (<200 ms).
@@ -171,6 +179,7 @@ function bootstrap(): void {
   const combatHud = new CombatHud();
   const scopeHud = new ScopeHud();
   const aiDebugHud = new AiDebugHud();
+  const flashOverlay = new FlashOverlay();
   const roundHud = new RoundHud(hudRoot);
   const scoreboard = new Scoreboard(hudRoot);
   const c4Entity = new C4Entity();
@@ -246,6 +255,9 @@ function bootstrap(): void {
   // first sim tick so the path service's per-frame budget applies.
   const refreshBotsForNewRound = (): void => {
     if (!match.round) return;
+    // Drop any in-flight grenades / smokes / fire patches from the
+    // previous round — none of that should bleed into the new round.
+    grenadeSystem.reset();
     const tBots: Bot[] = [];
     const ctBots: Bot[] = [];
     for (const bot of bots) {
@@ -315,6 +327,34 @@ function bootstrap(): void {
   const mirrorBomb = (b: import('./match/bomb').BombState | null | undefined): import('./ai/blackboard').BombInfo => {
     if (!b) return { phase: 'carried', carrierId: null, site: null, pos: null };
     return { phase: b.phase, carrierId: b.carrierId, site: b.site, pos: b.pos };
+  };
+
+  const buyMenuCtx = (
+    slot: import('./match/match').MatchPlayerSlot,
+    inBuyZone: boolean,
+    buyPhase: boolean,
+  ): import('./hud/buyMenu').BuyContext => {
+    const inv = localPlayer.character.inventory;
+    const grenades = { he: 0, flashbang: 0, smoke: 0, molotov: 0, total: 0 };
+    if (inv) {
+      for (const g of inv.grenades) {
+        if (g.def.id === 'he' || g.def.id === 'flashbang' || g.def.id === 'smoke' || g.def.id === 'molotov') {
+          grenades[g.def.id] += 1;
+        }
+      }
+      grenades.total = inv.grenades.length;
+    }
+    return {
+      side: slot.currentSide,
+      money: slot.money,
+      inBuyZone, buyPhase,
+      helmet: localPlayer.character.helmet,
+      armor: localPlayer.character.armor,
+      hasKit: localPlayer.character.hasKit,
+      hasPrimary: inv?.primary?.def.id ?? null,
+      hasSecondary: inv?.secondary?.def.id ?? null,
+      grenades,
+    };
   };
 
 
@@ -397,16 +437,7 @@ function bootstrap(): void {
           buyMenu.close();
           input.requestPointerLock();
         } else if (allowBuy) {
-          buyMenu.open({
-            side: slot.currentSide,
-            money: slot.money,
-            inBuyZone, buyPhase,
-            helmet: localPlayer.character.helmet,
-            armor: localPlayer.character.armor,
-            hasKit: localPlayer.character.hasKit,
-            hasPrimary: localPlayer.character.inventory?.primary?.def.id ?? null,
-            hasSecondary: localPlayer.character.inventory?.secondary?.def.id ?? null,
-          });
+          buyMenu.open(buyMenuCtx(slot, inBuyZone, buyPhase));
           input.releasePointerLock();
         }
       }
@@ -416,16 +447,7 @@ function bootstrap(): void {
       }
       // Refresh content / auto-close on lost eligibility.
       if (buyMenu.isOpen()) {
-        buyMenu.refresh({
-          side: slot.currentSide,
-          money: slot.money,
-          inBuyZone, buyPhase,
-          helmet: localPlayer.character.helmet,
-          armor: localPlayer.character.armor,
-          hasKit: localPlayer.character.hasKit,
-          hasPrimary: localPlayer.character.inventory?.primary?.def.id ?? null,
-          hasSecondary: localPlayer.character.inventory?.secondary?.def.id ?? null,
-        });
+        buyMenu.refresh(buyMenuCtx(slot, inBuyZone, buyPhase));
       }
     }
 
@@ -442,6 +464,7 @@ function bootstrap(): void {
       if (input.wasPressed('Digit1') && invObj.primary) switched = switchTo(invObj, 'primary', time.simMs);
       else if (input.wasPressed('Digit2') && invObj.secondary) switched = switchTo(invObj, 'secondary', time.simMs);
       else if (input.wasPressed('Digit3')) switched = switchTo(invObj, 'knife', time.simMs);
+      else if (input.wasPressed('Digit4') && invObj.grenades.length > 0) switched = switchTo(invObj, 'grenade', time.simMs);
       else if (input.wasPressed('Digit5') && invObj.c4) switched = switchTo(invObj, 'c4', time.simMs);
       else if (wheelEligible && wheelTicks !== 0) {
         // Each tick is one slot step. Wheel-down (positive) goes forward,
@@ -496,6 +519,26 @@ function bootstrap(): void {
       const fwdY = Math.sin(py);
       const fwdZ = Math.cos(yaw) * cosP;
 
+      // Grenades are thrown, not hitscan-fired. LMB = full throw, RMB =
+      // underhand. After a successful throw the consumed instance is
+      // popped; if no grenades remain we fall back to the player's
+      // primary or secondary so the next click does the expected thing.
+      if (activeInst.def.slot === 'grenade') {
+        const lmb = input.wasMousePressed(0);
+        const rmb = input.wasMousePressed(2);
+        if ((lmb || rmb) && activeInst.state === 'ready') {
+          grenadeSystem.throw_(
+            activeInst.def.id as 'he' | 'flashbang' | 'smoke' | 'molotov',
+            'local',
+            { ox: eyeX, oy: eyeY, oz: eyeZ, fwdX, fwdY, fwdZ, power: lmb ? 'full' : 'underhand' },
+            time.simMs,
+          );
+          const inv = localPlayer.character.inventory!;
+          consumeActiveGrenade(inv);
+          viewModel.setWeapon(activeInstance(inv));
+        }
+      } else {
+
       // Only forward RMB to firing for melee weapons — for scoped guns
       // RMB is already consumed by the scope toggle above.
       const meleeSecondaryEdge = rmbEdge && activeInst.def.fireMode === 'melee';
@@ -516,6 +559,7 @@ function bootstrap(): void {
         }
       }
       viewModel.setReloading(activeInst.state === 'reloading');
+      }   // end of non-grenade else
     }
 
     // Step bot AI: perception → decision → aim/fire → movement. Gated on
@@ -543,7 +587,7 @@ function bootstrap(): void {
 
       for (const bot of bots) {
         if (!bot.character.alive) continue;
-        bot.perception.maybeStep(bot.character, characters, query, time.simMs);
+        bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
         const isT = bot.character.team === 'T';
         const board = isT ? tBoard : ctBoard;
         const teammates = (isT ? tAlive : ctAlive) - 1;   // exclude self
@@ -575,7 +619,7 @@ function bootstrap(): void {
       // and bots are ready to engage the moment freeze ends.
       for (const bot of bots) {
         if (!bot.character.alive) continue;
-        bot.perception.maybeStep(bot.character, characters, query, time.simMs);
+        bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
       }
     }
 
@@ -633,6 +677,11 @@ function bootstrap(): void {
         });
       }
     }
+
+    // Grenade physics. Runs every sim tick regardless of phase so an
+    // already-thrown grenade still detonates if the round ends mid-air;
+    // the system clears itself on round reset.
+    grenadeSystem.step(dtMs, time.simMs);
 
     // Step the match.
     match = stepMatch(match, {
@@ -757,6 +806,7 @@ function bootstrap(): void {
     debugHud.update(renderDtMs);
     aiDebugHud.update(bots, tBoard, ctBoard);
     combatHud.update(localPlayer.character, performance.now());
+    flashOverlay.update(localPlayer.character, time.simMs);
     roundHud.update(match, characters, time.simMs);
     scoreboard.update(match, characters);
     bombHud.update(localPlayer.character, match.round?.bomb ?? null, world);
@@ -787,6 +837,7 @@ function currentInstance(p: LocalPlayer): WeaponInstance | null {
     case 'secondary': return inv.secondary ?? null;
     case 'knife': return inv.knife;
     case 'c4': return inv.c4 ?? null;
+    case 'grenade': return inv.grenades[inv.activeGrenadeIdx] ?? null;
   }
 }
 

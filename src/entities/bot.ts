@@ -247,6 +247,7 @@ function activeMoveSpeedScale(bot: Bot): number {
     case 'secondary': return inv.secondary?.def.moveSpeedScale ?? 1;
     case 'knife':     return inv.knife.def.moveSpeedScale;
     case 'c4':        return inv.c4?.def.moveSpeedScale ?? 1;
+    case 'grenade':   return inv.grenades[inv.activeGrenadeIdx]?.def.moveSpeedScale ?? 1;
   }
 }
 

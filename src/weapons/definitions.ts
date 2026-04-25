@@ -7,11 +7,12 @@
  *  and falloff. */
 
 export type WeaponId =
-  | 'ak47' | 'm4a4' | 'usp_s' | 'glock18' | 'awp' | 'knife' | 'c4';
+  | 'ak47' | 'm4a4' | 'usp_s' | 'glock18' | 'awp' | 'knife' | 'c4'
+  | 'he' | 'flashbang' | 'smoke' | 'molotov';
 
 export type WeaponSlot = 'primary' | 'secondary' | 'knife' | 'grenade' | 'c4';
-export type WeaponCategory = 'rifle' | 'smg' | 'pistol' | 'sniper' | 'shotgun' | 'lmg' | 'knife' | 'bomb';
-export type FireMode = 'auto' | 'semi' | 'burst' | 'bolt' | 'melee' | 'planted';
+export type WeaponCategory = 'rifle' | 'smg' | 'pistol' | 'sniper' | 'shotgun' | 'lmg' | 'knife' | 'bomb' | 'grenade';
+export type FireMode = 'auto' | 'semi' | 'burst' | 'bolt' | 'melee' | 'planted' | 'thrown';
 export type WeaponTeam = 'T' | 'CT' | 'both';
 
 export interface WeaponDef {
@@ -380,7 +381,65 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     fireSound: 'c4_beep',
     reloadSound: 'c4_beep',
   },
+  he: makeGrenadeDef({
+    id: 'he', displayName: 'HE Grenade', cost: 300, killReward: 300,
+    fireSound: 'grenade_throw',
+  }),
+  flashbang: makeGrenadeDef({
+    id: 'flashbang', displayName: 'Flashbang', cost: 200, killReward: 0,
+    fireSound: 'grenade_throw',
+  }),
+  smoke: makeGrenadeDef({
+    id: 'smoke', displayName: 'Smoke', cost: 300, killReward: 0,
+    fireSound: 'grenade_throw',
+  }),
+  molotov: makeGrenadeDef({
+    id: 'molotov', displayName: 'Molotov', cost: 400, killReward: 100,
+    fireSound: 'grenade_throw',
+  }),
 };
+
+interface GrenadeFactoryArgs {
+  id: 'he' | 'flashbang' | 'smoke' | 'molotov';
+  displayName: string;
+  cost: number;
+  killReward: number;
+  fireSound: string;
+}
+function makeGrenadeDef(a: GrenadeFactoryArgs): WeaponDef {
+  return {
+    id: a.id,
+    displayName: a.displayName,
+    slot: 'grenade',
+    category: 'grenade',
+    team: 'both',
+    cost: a.cost,
+    fireMode: 'thrown',
+    rpm: 0,
+    // Grenades use ammoMag = "in your hand" (1) and ammoReserve = 0:
+    // each instance is a single grenade. Multiple instances stack in
+    // the inventory's grenade slot.
+    magazine: 1,
+    reserve: 0,
+    reloadMs: 0,
+    deployMs: 250,
+    baseDamage: 0,
+    armorPenetration: 0,
+    falloffStartM: 0,
+    falloffRangeM: 0,
+    baseInaccuracyDeg: 0,
+    movingInaccuracyMul: 1,
+    jumpingInaccuracyMul: 1,
+    crouchInaccuracyMul: 1,
+    recoilDecayMs: 0,
+    sprayPattern: [[0, 0]],
+    cameraKickDeg: { x: 0, y: 0 },
+    moveSpeedScale: 1.0,
+    killReward: a.killReward,
+    fireSound: a.fireSound,
+    reloadSound: a.fireSound,
+  };
+}
 
 export function getWeapon(id: WeaponId): WeaponDef {
   const w = WEAPONS[id];

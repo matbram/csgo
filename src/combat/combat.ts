@@ -13,6 +13,7 @@ import { hitboxPose } from '../entities/character';
 import { events } from '../engine/events';
 import { computeInaccuracy } from './inaccuracy';
 import { time } from '../engine/time';
+import type { SmokeField } from '../grenades/smokeField';
 
 const MAX_RANGE_M = 120;
 
@@ -61,6 +62,10 @@ export class CombatSystem {
   constructor(
     private readonly world: WorldQuery,
     private readonly characters: () => Character[],
+    /** Optional smoke field — when present, character hits behind a
+     *  thick smoke chord are dropped (we leave bullet-through-smoke
+     *  damage falloff for a future pass). */
+    private readonly smokeField: SmokeField | null = null,
   ) {}
 
   fire(opts: FireOptions): FireResult {
@@ -98,9 +103,21 @@ export class CombatSystem {
       maxRange,
     );
     const worldT = worldHit?.t ?? Infinity;
+    // Smoke chord: a thick smoke pass blocks visual confirmation of
+    // hits. We treat it as a soft wall — bullets still travel (CS:GO
+    // can spray through smoke), but for hit registration any character
+    // beyond the smoke threshold is considered occluded.
+    const smokeBlockT = this.smokeField?.blockingT(
+      opts.ox, opts.oy, opts.oz,
+      finalDir.x, finalDir.y, finalDir.z,
+      Math.min(worldT, maxRange),
+    ) ?? null;
+    const visT = smokeBlockT !== null ? Math.min(worldT, smokeBlockT) : worldT;
 
-    // Raycast each character (skip shooter and dead).
-    let closestT = worldT;
+    // Raycast each character (skip shooter and dead). We clamp on
+    // visT (which folds smoke into the wall ray) so a character behind
+    // smoke isn't reported as a hit.
+    let closestT = visT;
     let bestVictim: Character | null = null;
     let bestKind: HitboxKind = 'chest';
     let bestPoint = { x: 0, y: 0, z: 0 };
