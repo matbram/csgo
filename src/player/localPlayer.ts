@@ -41,6 +41,7 @@ export class LocalPlayer {
       speed: 0,
       inAir: false,
       crouching: false,
+      scoped: false,
     };
     this.syncFromController();
   }

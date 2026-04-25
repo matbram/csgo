@@ -107,6 +107,12 @@ export class ViewModel {
     this.currentWeaponId = inst.def.id;
   }
 
+  /** Show/hide the view model. Used to hide the AWP body while scoped
+   *  (the scope overlay replaces it). */
+  setVisible(visible: boolean): void {
+    this.hand.setEnabled(visible);
+  }
+
   /** Add a fire kick. Called by the firing controller after a successful shot. */
   addKick(amountX: number, amountY: number, amountZ = 0.05): void {
     this.kickImpulseX += amountX;

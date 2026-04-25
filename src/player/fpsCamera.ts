@@ -11,10 +11,13 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { getScene } from '../engine/scene';
 import { input } from '../engine/input';
 import { time } from '../engine/time';
-import { HALF_PI } from '../util/math';
+import { HALF_PI, expSmooth } from '../util/math';
 import type { CharacterController } from './controller';
 
 const PITCH_LIMIT = HALF_PI - 0.02;
+
+const FOV_NORMAL = 1.40;       // ~80° vertical
+const FOV_SCOPED = 0.45;       // ~26° vertical
 
 export class FpsCamera {
   readonly camera: UniversalCamera;
@@ -24,6 +27,12 @@ export class FpsCamera {
   /** Smoothed view bob offset components for a clean reset to zero. */
   private bobOffsetY = 0;
   private bobOffsetX = 0;
+  /** Target FOV — smoothed in syncRender. */
+  private targetFov = FOV_NORMAL;
+  /** Scope-aware mouse sensitivity multiplier. While scoped we lower the
+   *  sensitivity in proportion to the FOV change so the same mouse motion
+   *  rotates by the same on-screen pixels. */
+  private sensScale = 1;
 
   constructor(player: CharacterController) {
     this.player = player;
@@ -31,12 +40,20 @@ export class FpsCamera {
     this.camera = new UniversalCamera('fps-camera', new Vector3(0, 0, 0), scene);
     this.camera.minZ = 0.05;
     this.camera.maxZ = 350;
-    this.camera.fov = 1.40;       // ~80° vertical
+    this.camera.fov = FOV_NORMAL;
     this.camera.inertia = 0;       // no Babylon-driven smoothing
     this.camera.angularSensibility = 1;
     // Disable Babylon's built-in input controllers — we drive yaw/pitch ourselves.
     this.camera.inputs.clear();
     scene.activeCamera = this.camera;
+  }
+
+  /** Set the camera's FOV target (in radians). Useful for sniper scope.
+   *  Pass `null` to return to normal. */
+  setScopeFov(fov: number | null): void {
+    this.targetFov = fov ?? FOV_NORMAL;
+    // Sensitivity scales with FOV ratio so look-feel matches pixel-distance.
+    this.sensScale = this.targetFov / FOV_NORMAL;
   }
 
   /** Apply mouse delta to player yaw/pitch. Called from a sim tick so the
@@ -49,7 +66,7 @@ export class FpsCamera {
     }
     const { dx, dy } = input.consumeMouseDelta();
     if (dx === 0 && dy === 0) return;
-    const sens = input.sensitivity;
+    const sens = input.sensitivity * this.sensScale;
     this.player.state.yaw += dx * sens;
     // Wrap yaw to keep the value bounded.
     if (this.player.state.yaw > Math.PI) this.player.state.yaw -= Math.PI * 2;
@@ -63,6 +80,8 @@ export class FpsCamera {
    *  horizontal speed; landing impulse and breath-bob would go here later. */
   syncRender(): void {
     const s = this.player.state;
+    // Smoothly interpolate FOV toward the target (scope in/out).
+    this.camera.fov = expSmooth(this.camera.fov, this.targetFov, 50, time.renderDtMs);
     // Advance bob phase by horizontal distance traveled this frame.
     const dist = s.speed * (time.renderDtMs / 1000);
     this.bobPhase += dist * 1.6; // 1.6 cycles per meter — feels right at run speed.

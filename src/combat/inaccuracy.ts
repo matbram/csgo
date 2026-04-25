@@ -14,6 +14,8 @@ export interface ShooterMotion {
   /** True if currently airborne. */
   inAir: boolean;
   crouching: boolean;
+  /** True when a sniper rifle is fully scoped. */
+  scoped?: boolean;
 }
 
 /** Inaccuracy in degrees (half-angle of error cone). */
@@ -32,6 +34,13 @@ export function computeInaccuracy(def: WeaponDef, motion: ShooterMotion): number
   // Air penalty — large.
   if (motion.inAir) {
     acc += def.jumpingInaccuracyMul * 0.05;
+  }
+
+  // Scoped sniper rifles are essentially pin-point when not moving. We
+  // multiply by 0.05 so the first scoped shot from a stationary AWP is
+  // basically dead-on.
+  if (motion.scoped) {
+    acc *= 0.05;
   }
 
   return acc;

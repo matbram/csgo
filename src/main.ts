@@ -48,6 +48,7 @@ import { Scoreboard } from './hud/scoreboard';
 import { BuyMenu } from './hud/buyMenu';
 import { C4Entity } from './entities/c4';
 import { BombHud } from './hud/bombHud';
+import { ScopeOverlay } from './hud/scopeOverlay';
 import { purchaseWeapon, purchaseArmor, purchaseKit } from './match/purchase';
 import type { Side } from './match/economy';
 
@@ -134,6 +135,7 @@ function bootstrap(): void {
   const scoreboard = new Scoreboard(hudRoot);
   const c4Entity = new C4Entity();
   const bombHud = new BombHud(hudRoot);
+  const scopeOverlay = new ScopeOverlay(hudRoot);
   const buyMenu = new BuyMenu(hudRoot, (req) => {
     const slot = match.players.get('local');
     if (!slot) return { ok: false, reason: 'No slot' };
@@ -274,8 +276,23 @@ function bootstrap(): void {
       if (switched) viewModel.setWeapon(activeInstance(invObj));
     }
 
-    // Firing — disabled during freeze/end and while buy menu open.
+    // Scope state (right-click hold while a sniper is equipped, alive,
+    // and the round is live). Updated every tick — applied to the
+    // character so combat/inaccuracy can read it, and to the camera/
+    // view-model/overlay each render frame.
     const activeInst = currentInstance(localPlayer);
+    const wantScope =
+      !!activeInst &&
+      activeInst.def.category === 'sniper' &&
+      activeInst.state === 'ready' &&
+      input.isMouseDown(2) &&
+      input.pointerLocked &&
+      !buyMenu.isOpen() &&
+      match.round?.phase === 'live' &&
+      localPlayer.character.alive;
+    localPlayer.character.scoped = wantScope;
+
+    // Firing — disabled during freeze/end and while buy menu open.
     if (
       activeInst &&
       input.pointerLocked &&
@@ -411,6 +428,13 @@ function bootstrap(): void {
 
   // ---- Render systems ----
   loop.registerRender((renderDtMs) => {
+    // Scope state: applied each render so FOV smoothing & overlay are
+    // immediately responsive even between sim ticks.
+    const scoped = localPlayer.character.scoped;
+    fps.setScopeFov(scoped ? 0.45 : null);
+    scopeOverlay.setVisible(scoped);
+    viewModel.setVisible(!scoped);
+
     fps.syncRender();
     // Keep the view model in sync with whatever weapon is currently active.
     // This catches purchases (which auto-switch the active slot) without

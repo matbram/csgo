@@ -35,6 +35,7 @@ export function createDummy(team: 'T' | 'CT', x: number, y: number, z: number, y
     speed: 0,
     inAir: false,
     crouching: false,
+    scoped: false,
   };
   syncHumanoidPose(parts, x, y, z, yaw, character.currentEye, character.currentHeight);
   return { character, parts };

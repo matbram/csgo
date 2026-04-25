@@ -62,6 +62,12 @@ export class CombatSystem {
   fire(opts: FireOptions): FireResult {
     const { weapon } = opts;
 
+    // Melee weapons have a hard range cap so a knife swing doesn't
+    // ray-hit a target 100m away for 10% damage.
+    const maxRange = weapon.fireMode === 'melee'
+      ? weapon.falloffStartM + 0.2
+      : MAX_RANGE_M;
+
     // Compose direction: aim + spray pattern + inaccuracy scatter.
     const right = computeRight(opts.fwdX, opts.fwdY, opts.fwdZ);
     const up = computeUp(opts.fwdX, opts.fwdY, opts.fwdZ, right);
@@ -85,12 +91,12 @@ export class CombatSystem {
     const worldHit = this.world.rayWorld(
       opts.ox, opts.oy, opts.oz,
       finalDir.x, finalDir.y, finalDir.z,
-      MAX_RANGE_M,
+      maxRange,
     );
     const worldT = worldHit?.t ?? Infinity;
 
     // Raycast each character (skip shooter and dead).
-    let closestT = worldT;
+    let closestT = Math.min(worldT, maxRange);
     let bestVictim: Character | null = null;
     let bestKind: HitboxKind = 'chest';
     let bestPoint = { x: 0, y: 0, z: 0 };
@@ -181,11 +187,11 @@ export class CombatSystem {
 
     // Miss into the void.
     return {
-      endX: opts.ox + finalDir.x * MAX_RANGE_M,
-      endY: opts.oy + finalDir.y * MAX_RANGE_M,
-      endZ: opts.oz + finalDir.z * MAX_RANGE_M,
+      endX: opts.ox + finalDir.x * maxRange,
+      endY: opts.oy + finalDir.y * maxRange,
+      endZ: opts.oz + finalDir.z * maxRange,
       kind: 'miss',
-      distance: MAX_RANGE_M,
+      distance: maxRange,
     };
   }
 }

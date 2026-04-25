@@ -78,7 +78,10 @@ export class FiringController {
     }
 
     // 4) Fire if allowed.
-    const canFire = inst.state === 'ready' && inst.ammoMag > 0;
+    // Knives and other melee weapons have magazine=0; they don't consume
+    // ammo. For everything else we require ammoMag > 0.
+    const isMelee = inst.def.fireMode === 'melee' || inst.def.magazine === 0;
+    const canFire = inst.state === 'ready' && (isMelee || inst.ammoMag > 0);
     if (!canFire) return false;
 
     const fireIntervalMs = 60_000 / inst.def.rpm;
@@ -99,6 +102,7 @@ export class FiringController {
       speed: shooter.speed,
       inAir: shooter.inAir,
       crouching: shooter.crouching,
+      scoped: shooter.scoped,
     });
 
     const result = this.combat.fire({
@@ -125,12 +129,14 @@ export class FiringController {
     });
 
     // Update state.
-    inst.ammoMag -= 1;
+    if (!isMelee) {
+      inst.ammoMag -= 1;
+      if (inst.ammoMag <= 0) {
+        inst.state = 'empty';
+      }
+    }
     inst.lastFireMs = nowMs;
     inst.sprayIndex += 1;
-    if (inst.ammoMag <= 0) {
-      inst.state = 'empty';
-    }
     return true;
   }
 }

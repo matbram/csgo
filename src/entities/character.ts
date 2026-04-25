@@ -33,6 +33,9 @@ export interface Character {
   speed: number;
   inAir: boolean;
   crouching: boolean;
+  /** True while a sniper rifle is scoped (right-click held). Reduces
+   *  inaccuracy and changes camera FOV + view-model visibility. */
+  scoped: boolean;
 }
 
 export function hitboxPose(c: Character): HitboxPose {
