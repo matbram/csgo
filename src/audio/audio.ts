@@ -50,6 +50,18 @@ function generateAllSounds(): void {
   if (reload) buffers.set('reload', reload);
   const knife = synthesizeKnife();
   if (knife) buffers.set('knife_swing', knife);
+  const beep = synthesizeBomb();
+  if (beep) buffers.set('c4_beep', beep);
+  const plant = synthesizePlant();
+  if (plant) buffers.set('c4_plant', plant);
+  const defuse = synthesizeDefuse();
+  if (defuse) buffers.set('c4_defuse', defuse);
+  const explode = synthesizeExplode();
+  if (explode) buffers.set('c4_explode', explode);
+  const win = synthesizeWin();
+  if (win) buffers.set('round_win', win);
+  const lose = synthesizeLose();
+  if (lose) buffers.set('round_lose', lose);
 }
 
 function synthesizeGunshot(id: WeaponId): AudioBuffer | null {
@@ -144,6 +156,105 @@ function synthesizeKnife(): AudioBuffer | null {
   return buf;
 }
 
+function synthesizeBomb(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.10);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 35);
+    data[i] = clip(Math.sin(2 * Math.PI * 1500 * t) * env * 0.5);
+  }
+  return buf;
+}
+
+function synthesizePlant(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.4);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 6);
+    const tone = Math.sin(2 * Math.PI * 800 * t) * 0.3 + Math.sin(2 * Math.PI * 1200 * t) * 0.2;
+    data[i] = clip(tone * env);
+  }
+  return buf;
+}
+
+function synthesizeDefuse(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.6);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 4);
+    const tone = Math.sin(2 * Math.PI * 700 * t) * 0.3 + Math.sin(2 * Math.PI * 1050 * t) * 0.2;
+    data[i] = clip(tone * env);
+  }
+  return buf;
+}
+
+function synthesizeExplode(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 1.6);
+  const buf = ctx.createBuffer(2, length, sr);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = buf.getChannelData(ch);
+    let lp = 0;
+    for (let i = 0; i < length; i++) {
+      const t = i / sr;
+      const initialBoom = Math.exp(-t * 5);
+      const tail = Math.exp(-t * 1.0) * 0.5;
+      const noise = Math.random() * 2 - 1;
+      let s = noise * (initialBoom + tail) * 1.0;
+      s += Math.sin(2 * Math.PI * 60 * t) * initialBoom * 0.6;
+      s += Math.sin(2 * Math.PI * 35 * t) * initialBoom * 0.8;
+      const cutoff = 1200;
+      const a = 1 - Math.exp(-2 * Math.PI * cutoff / sr);
+      lp += a * (s - lp);
+      data[i] = clip(lp * 1.5);
+    }
+  }
+  return buf;
+}
+
+function synthesizeWin(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.6);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 2);
+    const f = 440 + 120 * t;
+    data[i] = clip(Math.sin(2 * Math.PI * f * t) * env * 0.4);
+  }
+  return buf;
+}
+
+function synthesizeLose(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.7);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 2);
+    const f = 280 - 60 * t;
+    data[i] = clip(Math.sin(2 * Math.PI * f * t) * env * 0.4);
+  }
+  return buf;
+}
+
 function clip(v: number): number {
   return v < -1 ? -1 : v > 1 ? 1 : v;
 }
@@ -227,5 +338,18 @@ export function installAudio(): void {
     if (shooterId === 'local') {
       playSound('reload', { volume: 0.6 });
     }
+  });
+
+  events.on('match:bombPlanted', ({ x, y, z }) => {
+    playSoundAt('c4_plant', x, y, z, { volume: 0.9, maxDistance: 200 });
+  });
+  events.on('match:bombDefused', ({ x, y, z }) => {
+    playSoundAt('c4_defuse', x, y, z, { volume: 0.9, maxDistance: 200 });
+  });
+  events.on('match:bombExploded', ({ x, y, z }) => {
+    playSoundAt('c4_explode', x, y, z, { volume: 1.5, maxDistance: 300 });
+  });
+  events.on('match:roundEnd', ({ playerWon }) => {
+    playSound(playerWon ? 'round_win' : 'round_lose', { volume: 0.5 });
   });
 }

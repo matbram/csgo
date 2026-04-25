@@ -10,6 +10,11 @@ export class StartOverlay {
   private readonly button: HTMLButtonElement;
   private readonly canvas: HTMLCanvasElement;
   private bound = false;
+  /** Becomes true once the user has acquired pointer lock for the first time.
+   *  After that, losing lock (Esc, buy menu, etc.) does NOT re-show the
+   *  start overlay — that would block other UI. The user can click the
+   *  canvas anywhere to re-acquire lock. */
+  private everLocked = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -27,7 +32,13 @@ export class StartOverlay {
     this.button.addEventListener('click', this.requestLock);
     this.canvas.addEventListener('click', this.requestLock);
     events.on('input:pointerLockChanged', ({ locked }) => {
-      this.show(!locked);
+      if (locked) {
+        this.everLocked = true;
+        this.show(false);
+      } else if (!this.everLocked) {
+        this.show(true);
+      }
+      // After first lock, never re-show the start overlay automatically.
     });
   }
 

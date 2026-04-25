@@ -29,6 +29,7 @@ export function createDummy(team: 'T' | 'CT', x: number, y: number, z: number, y
     hp: 100,
     armor: opts?.armor ?? 0,
     helmet: opts?.helmet ?? false,
+    hasKit: false,
     alive: true,
     inventory: null,
     speed: 0,

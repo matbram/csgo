@@ -1,24 +1,16 @@
-/** App entry. Boots the engine, builds the map, spawns the local player,
- *  and registers sim/render systems with the loop.
+/** App entry. Boots the engine, builds the map, runs a 5v5 match.
  *
- *  Order of operations is deliberate. Several systems depend on others,
- *  so we initialize them in this order:
- *
- *    1. Babylon Engine + Scene             — needed by everything
- *    2. Lighting (sun, ambient, sky)       — needs Scene
- *    3. Materials / textures               — needs Scene
- *    4. Map build                          — produces World + meshes
- *    5. Local player + controller          — needs World
- *    6. FPS camera                         — needs Scene + player
- *    7. Post-processing pipeline           — needs the camera
- *    8. View model + inventory             — needs camera
- *    9. Combat system + firing             — needs World + character list
- *   10. Audio                              — uses combat events
- *   11. Visuals (decals, tracers)          — uses combat events
- *   12. HUD                                — needs DOM + player + world
- *   13. Dummies                            — testing targets
- *   14. Input                              — needs canvas
- *   15. Loop register                      — last; runs everything
+ *  Init order:
+ *    1.  Engine + scene
+ *    2.  Lighting + sky
+ *    3.  Map build (world + meshes)
+ *    4.  Local controller + camera + post-FX
+ *    5.  Local player wrapper + view model
+ *    6.  Combat + audio + visuals
+ *    7.  Roster (4 T dummies + 5 CT dummies + local)
+ *    8.  Match state, HUDs (round, combat, scoreboard, buy menu)
+ *    9.  Input
+ *   10.  Loop
  */
 
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
@@ -43,18 +35,32 @@ import { FiringController } from './combat/firing';
 import { activeInstance, switchTo, makeInstance } from './weapons/inventory';
 import type { WeaponInstance } from './weapons/inventory';
 import { installCombatVisuals } from './combat/visuals';
-import { installAudio, ensureAudioContext, setListenerPose } from './audio/audio';
+import { installAudio, ensureAudioContext, setListenerPose, playSound } from './audio/audio';
 import { CombatHud } from './hud/combatHud';
 import { createDummy, syncDummy, type Dummy } from './entities/dummy';
 import type { Character } from './entities/character';
+import { pointInPolygon2D } from './map/world';
+import { makeMatch, beginRound, endRound, applyHalftime, stepMatch, type MatchState } from './match/match';
+import { resetRoster, assignBomb } from './match/roster';
+import { isBuyPhase, isMovementLocked } from './match/round';
+import { RoundHud } from './hud/roundHud';
+import { Scoreboard } from './hud/scoreboard';
+import { BuyMenu } from './hud/buyMenu';
+import { C4Entity } from './entities/c4';
+import { purchaseWeapon, purchaseArmor, purchaseKit } from './match/purchase';
+import type { Side } from './match/economy';
 
 function bootstrap(): void {
   const canvas = document.getElementById('render-canvas');
   if (!(canvas instanceof HTMLCanvasElement)) {
     throw new Error('Render canvas missing');
   }
+  const hudRoot = document.getElementById('hud-root');
+  if (!(hudRoot instanceof HTMLDivElement)) {
+    throw new Error('HUD root missing');
+  }
 
-  // 1) Babylon engine + scene
+  // 1) Engine + scene
   createEngine(canvas);
   const engine = getEngine();
   const scene = getScene();
@@ -62,10 +68,10 @@ function bootstrap(): void {
   // 2) Lighting
   createLighting();
 
-  // 4) Build the map.
+  // 3) Map
   const { world } = buildMap(dust2());
 
-  // 5) Local player.
+  // 4) Local controller + camera + post-FX
   const tSpawns = world.spawnsForTeam('T');
   const startSpawn = tSpawns[0] ?? null;
   const startPos = startSpawn?.pos.clone() ?? new Vector3(0, 1, -38);
@@ -75,118 +81,210 @@ function bootstrap(): void {
   const query = new WorldQuery(world);
   const controller = new CharacterController(query, startPos, startYaw, DEFAULT_TUNABLES);
   controller.snapToGround();
-
-  // 6) FPS camera
   const fps = new FpsCamera(controller);
-
-  // 7) Post-FX
   createPostFx(fps.camera);
 
-  // 8) Local player wrapper + view model + starter loadout
+  // 5) Local player + view model
   const localPlayer = new LocalPlayer(controller, 'T');
   const viewModel = new ViewModel(fps.camera);
-
-  // For M2 demo: give the player a rifle on top of the starter pistol.
-  // T side gets AK; CT side would get M4. (We're T here.)
-  if (localPlayer.character.inventory) {
-    const ak = makeInstance('ak47');
-    localPlayer.character.inventory.primary = ak;
-    localPlayer.character.inventory.active = 'primary';
-  }
-  // Initialize view model to current weapon.
   viewModel.setWeapon(currentInstance(localPlayer));
 
-  // 9) Combat
+  // 6) Combat + audio + visuals
   const characters: Character[] = [localPlayer.character];
   const combatSystem = new CombatSystem(query, () => characters);
   const firing = new FiringController(combatSystem);
-
-  // 10) Audio + 11) Visuals
   installAudio();
   installCombatVisuals();
 
-  // 12) HUD
-  ensureCrosshair();
-  const debugHud = new DebugHud(controller, world);
-  const combatHud = new CombatHud();
-  const startOverlay = new StartOverlay(canvas);
-  startOverlay.bind();
-
-  // 13) Dummies — five stationary CT bots inside T spawn line-of-sight
-  // (~12m north of T spawn so the player can practice).
+  // 7) Roster: 4 more T dummies (teammates), 5 CT dummies (enemies).
   const dummies: Dummy[] = [];
-  const tCenter = startSpawn?.pos ?? new Vector3(0, 0, -38);
-  const dummyOffsets: Array<[number, number]> = [[-6, 14], [-3, 16], [0, 18], [3, 16], [6, 14]];
-  for (let i = 0; i < dummyOffsets.length; i++) {
-    const off = dummyOffsets[i]!;
-    const armor = i % 2 === 0 ? 100 : 0;
-    const helmet = i === 1 || i === 3;
-    const d = createDummy('CT', tCenter.x + off[0], 0, tCenter.z + off[1], Math.PI, { armor, helmet });
+  let dummyIdx = 0;
+  for (let i = 0; i < 4; i++) {
+    const sp = tSpawns[(i + 1) % Math.max(1, tSpawns.length)] ?? startSpawn!;
+    const d = createDummy('T', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw);
+    d.character.id = `t-bot-${++dummyIdx}`;
+    dummies.push(d);
+    characters.push(d.character);
+  }
+  const ctSpawns = world.spawnsForTeam('CT');
+  for (let i = 0; i < 5; i++) {
+    const sp = ctSpawns[i % Math.max(1, ctSpawns.length)] ?? ctSpawns[0]!;
+    if (!sp) throw new Error('No CT spawns authored');
+    const d = createDummy('CT', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw);
+    d.character.id = `ct-bot-${i + 1}`;
     dummies.push(d);
     characters.push(d.character);
   }
 
-  // Click on canvas inside the game requests pointer lock; that's also the
-  // user gesture we need to unlock audio context.
-  canvas.addEventListener('click', () => ensureAudioContext());
+  // 8) Match state
+  let match: MatchState = makeMatch({
+    players: [
+      { id: 'local', side: 'T' },
+      ...[1, 2, 3, 4].map((n) => ({ id: `t-bot-${n}`, side: 'T' as Side })),
+      ...[1, 2, 3, 4, 5].map((n) => ({ id: `ct-bot-${n}`, side: 'CT' as Side })),
+    ],
+  });
 
-  // 14) Input
+  // HUDs
+  ensureCrosshair();
+  const debugHud = new DebugHud(controller, world);
+  const combatHud = new CombatHud();
+  const roundHud = new RoundHud(hudRoot);
+  const scoreboard = new Scoreboard(hudRoot);
+  const c4Entity = new C4Entity();
+  const buyMenu = new BuyMenu(hudRoot, (req) => {
+    const slot = match.players.get('local');
+    if (!slot) return { ok: false, reason: 'No slot' };
+    const c = localPlayer.character;
+    switch (req.kind) {
+      case 'weapon':
+        if (!req.weapon) return { ok: false, reason: 'no weapon id' };
+        return purchaseWeapon(slot, c, req.weapon);
+      case 'armor':  return purchaseArmor(slot, c, false);
+      case 'helmet': return purchaseArmor(slot, c, true);
+      case 'kit':    return purchaseKit(slot, c);
+    }
+  });
+
+  const startOverlay = new StartOverlay(canvas);
+  startOverlay.bind();
+
+  // Round-end → next round transition handled in sim loop.
+  let roundEndApplied = false;
+  let lastRoundNumber = 0;
+
+  // Track local-player kills/deaths for scoreboard + economy.
+  events.on('combat:kill', ({ attackerId, victimId, weapon }) => {
+    const atk = match.players.get(attackerId);
+    const vic = match.players.get(victimId);
+    if (atk) {
+      atk.kills += 1;
+      atk.killWeapons.push(weapon as never);
+    }
+    if (vic) vic.deaths += 1;
+  });
+
+  // 9) Input
+  canvas.addEventListener('click', () => ensureAudioContext());
   input.attach(canvas);
+
+  // First round. Reset everyone first so beginRound's carrier pick sees
+  // alive characters; then begin the round; then assign the C4 to the carrier.
+  resetRoster(characters, localPlayer, world, match, /* localSurvived */ true);
+  match = beginRound(match, time.simMs, characters);
+  if (match.round?.bomb?.carrierId) {
+    assignBomb(characters, match.round.bomb.carrierId);
+  }
+  events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
+  lastRoundNumber = match.round!.number;
 
   // ---- Sim systems ----
   loop.registerSim((dtMs) => {
-    // 1. Mouse look.
+    const nowMs = time.simMs + dtMs; // step time updates AFTER sim systems run, so use computed
     fps.applyMouseLook();
 
-    // 2. Debug toggle.
     if (input.wasPressed('F3')) debugHud.toggle();
 
-    // 3. Build wishDir from WASD + yaw.
+    // Tab → scoreboard. Press / release edges; we also keep it sticky during round end.
+    const tabHeld = input.isDown('Tab');
+    scoreboard.setVisible(tabHeld || match.round?.phase === 'end' || match.phase === 'matchEnd' || match.phase === 'halftime');
+
+    // Movement input (locked during freeze/end).
     let forward = 0, strafe = 0;
-    if (input.isDown('KeyW')) forward += 1;
-    if (input.isDown('KeyS')) forward -= 1;
-    if (input.isDown('KeyD')) strafe += 1;
-    if (input.isDown('KeyA')) strafe -= 1;
+    if (!isMovementLocked(match.round!) && input.pointerLocked && !buyMenu.isOpen()) {
+      if (input.isDown('KeyW')) forward += 1;
+      if (input.isDown('KeyS')) forward -= 1;
+      if (input.isDown('KeyD')) strafe += 1;
+      if (input.isDown('KeyA')) strafe -= 1;
+    }
     const yaw = controller.state.yaw;
     const fX = Math.sin(yaw), fZ = Math.cos(yaw);
     const rX = Math.cos(yaw), rZ = -Math.sin(yaw);
 
-    // Speed scale based on active weapon (heavier weapons slow you down).
     const inst = currentInstance(localPlayer);
     const speedScale = inst?.def.moveSpeedScale ?? 1.0;
     const wishX = fX * forward + rX * strafe;
     const wishZ = fZ * forward + rZ * strafe;
 
+    const movementLocked = isMovementLocked(match.round!);
     controller.step(dtMs, {
-      wishX, wishZ,
-      jump: input.isDown('Space'),
+      wishX: movementLocked ? 0 : wishX,
+      wishZ: movementLocked ? 0 : wishZ,
+      jump: !movementLocked && input.isDown('Space'),
       walk: input.isDown('ShiftLeft') || input.isDown('ShiftRight'),
       crouch: input.isDown('ControlLeft') || input.isDown('ControlRight'),
       speedScale,
     });
     localPlayer.syncFromController();
 
-    // 4. Weapon switching (1 = primary, 2 = secondary, 3 = knife).
+    // Buy menu toggling — only if buy phase + in buy zone.
+    const slot = match.players.get('local');
+    if (slot) {
+      const inBuyZone = isInBuyZoneForLocal(localPlayer, match, world);
+      const buyPhase = isBuyPhase(match.round!, time.simMs);
+      const allowBuy = inBuyZone && buyPhase && localPlayer.character.alive;
+
+      if (input.wasPressed('KeyB')) {
+        if (buyMenu.isOpen()) {
+          buyMenu.close();
+          input.requestPointerLock();
+        } else if (allowBuy) {
+          buyMenu.open({
+            side: slot.currentSide,
+            money: slot.money,
+            inBuyZone, buyPhase,
+            helmet: localPlayer.character.helmet,
+            armor: localPlayer.character.armor,
+            hasKit: localPlayer.character.hasKit,
+            hasPrimary: localPlayer.character.inventory?.primary?.def.id ?? null,
+            hasSecondary: localPlayer.character.inventory?.secondary?.def.id ?? null,
+          });
+          input.releasePointerLock();
+        }
+      }
+      if (input.wasPressed('Escape') && buyMenu.isOpen()) {
+        buyMenu.close();
+        input.requestPointerLock();
+      }
+      // Refresh content / auto-close on lost eligibility.
+      if (buyMenu.isOpen()) {
+        buyMenu.refresh({
+          side: slot.currentSide,
+          money: slot.money,
+          inBuyZone, buyPhase,
+          helmet: localPlayer.character.helmet,
+          armor: localPlayer.character.armor,
+          hasKit: localPlayer.character.hasKit,
+          hasPrimary: localPlayer.character.inventory?.primary?.def.id ?? null,
+          hasSecondary: localPlayer.character.inventory?.secondary?.def.id ?? null,
+        });
+      }
+    }
+
+    // Weapon switching.
     const invObj = localPlayer.character.inventory;
-    if (invObj) {
+    if (invObj && !movementLocked) {
       let switched = false;
       if (input.wasPressed('Digit1') && invObj.primary) switched = switchTo(invObj, 'primary', time.simMs);
       else if (input.wasPressed('Digit2') && invObj.secondary) switched = switchTo(invObj, 'secondary', time.simMs);
       else if (input.wasPressed('Digit3')) switched = switchTo(invObj, 'knife', time.simMs);
-      if (switched) {
-        viewModel.setWeapon(activeInstance(invObj));
-      }
+      else if (input.wasPressed('Digit5') && invObj.c4) switched = switchTo(invObj, 'c4', time.simMs);
+      if (switched) viewModel.setWeapon(activeInstance(invObj));
     }
 
-    // 5. Firing.
+    // Firing — disabled during freeze/end and while buy menu open.
     const activeInst = currentInstance(localPlayer);
-    if (activeInst && input.pointerLocked) {
-      // Eye position from controller state (sim authoritative; not the
-      // bob-offset camera which is only updated each render frame).
+    if (
+      activeInst &&
+      input.pointerLocked &&
+      !buyMenu.isOpen() &&
+      match.round?.phase === 'live' &&
+      localPlayer.character.alive &&
+      activeInst.def.slot !== 'c4'
+    ) {
       const eyeX = controller.state.pos.x;
       const eyeY = controller.state.pos.y + controller.state.currentEye;
       const eyeZ = controller.state.pos.z;
-      // Forward from yaw + pitch.
       const py = controller.state.pitch;
       const cosP = Math.cos(py);
       const fwdX = Math.sin(yaw) * cosP;
@@ -206,19 +304,116 @@ function bootstrap(): void {
       }
       viewModel.setReloading(activeInst.state === 'reloading');
     }
+
+    // Plant / defuse intent — read from the same E key.
+    const eHeld = input.isDown('KeyE') && !buyMenu.isOpen() && localPlayer.character.alive;
+    const planterIntent = (() => {
+      const inv = localPlayer.character.inventory;
+      const hasC4 = !!inv?.c4;
+      if (!hasC4) return null;
+      if (localPlayer.character.team !== 'T') return null;
+      return {
+        id: 'local',
+        pos: localPlayer.character.pos,
+        holdingPlant: eHeld,
+        alive: localPlayer.character.alive,
+      };
+    })();
+    const defuserIntents = localPlayer.character.team === 'CT' && match.round?.bomb && match.round.bomb.phase === 'planted'
+      ? [{
+          id: 'local',
+          pos: localPlayer.character.pos,
+          holdingDefuse: eHeld,
+          hasKit: localPlayer.character.hasKit,
+          alive: localPlayer.character.alive,
+        }]
+      : [];
+
+    // Step the match.
+    match = stepMatch(match, {
+      world,
+      characters,
+      planter: planterIntent,
+      defusers: defuserIntents,
+      nowMs: time.simMs,
+      dtMs,
+    });
+
+    // Round transitions.
+    const r = match.round;
+    if (r && r.phase === 'end' && !roundEndApplied) {
+      // Apply round-end economy, scores, etc.
+      const localWon = match.players.get('local')?.currentSide === r.outcome?.winner;
+      events.emit('match:roundEnd', {
+        number: r.number,
+        winner: r.outcome!.winner,
+        reason: r.outcome!.reason,
+        playerWon: localWon ?? false,
+        tMs: time.simMs,
+      });
+      match = endRound(match, time.simMs);
+      roundEndApplied = true;
+    }
+    if (r && r.phase === 'end' && time.simMs >= r.phaseEndMs && roundEndApplied) {
+      // Move to next phase.
+      if (match.phase === 'halftime') {
+        // Halftime period now begins; wait it out, then swap and start round 16.
+      } else if (match.phase === 'matchEnd') {
+        // Match over — sit here forever.
+      } else {
+        // Start the next round. Reset before beginRound so the carrier
+        // pick sees alive characters.
+        const localSurvived = localPlayer.character.alive;
+        resetRoster(characters, localPlayer, world, match, localSurvived);
+        match = beginRound(match, time.simMs, characters);
+        if (match.round?.bomb?.carrierId) {
+          assignBomb(characters, match.round.bomb.carrierId);
+        }
+        if (match.round!.number !== lastRoundNumber) {
+          events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
+          lastRoundNumber = match.round!.number;
+          // Refresh view model in case the player got the C4 or lost their primary.
+          if (localPlayer.character.inventory) {
+            viewModel.setWeapon(activeInstance(localPlayer.character.inventory));
+          }
+        }
+        roundEndApplied = false;
+      }
+    }
+
+    // Halftime expiry → swap sides + first second-half round.
+    if (match.phase === 'halftime' && time.simMs >= match.phaseEndMs) {
+      match = applyHalftime(match);
+      events.emit('match:halftime', { tMs: time.simMs });
+      // Switch the local player's side & refresh inventory + roster.
+      const localSlot = match.players.get('local');
+      if (localSlot) {
+        localPlayer.character.team = localSlot.currentSide;
+      }
+      resetRoster(characters, localPlayer, world, match, /* localSurvived */ false);
+      match = beginRound(match, time.simMs, characters);
+      if (match.round?.bomb?.carrierId) {
+        assignBomb(characters, match.round.bomb.carrierId);
+      }
+      if (localPlayer.character.inventory) {
+        viewModel.setWeapon(activeInstance(localPlayer.character.inventory));
+      }
+      roundEndApplied = false;
+      events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
+      lastRoundNumber = match.round!.number;
+    }
+
+    // Match end audio cue.
+    void nowMs;
   });
 
   // ---- Render systems ----
   loop.registerRender((renderDtMs) => {
     fps.syncRender();
-
-    // Update view model bob/kick/reload.
     viewModel.update(controller.state.speed, renderDtMs);
-
-    // Sync dummies.
     for (const d of dummies) syncDummy(d);
+    c4Entity.update(match.round?.bomb ?? null, time.simMs);
 
-    // Audio listener follows camera.
     const cam = fps.camera;
     const yaw = controller.state.yaw;
     const py = controller.state.pitch;
@@ -229,9 +424,10 @@ function bootstrap(): void {
       0, 1, 0,
     );
 
-    // HUDs.
     debugHud.update(renderDtMs);
     combatHud.update(localPlayer.character, performance.now());
+    roundHud.update(match, characters, time.simMs);
+    scoreboard.update(match, characters);
   });
 
   // ---- Run loop ----
@@ -245,9 +441,10 @@ function bootstrap(): void {
     events.emit('input:resize', { width: window.innerWidth, height: window.innerHeight });
   });
 
-  // Debug exposure
+  // Quiet a couple of unused-ish references for the linter.
+  void engine; void scene; void makeInstance; void playSound;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, dummies, characters };
+  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, dummies, characters, get match() { return match; } };
 }
 
 function currentInstance(p: LocalPlayer): WeaponInstance | null {
@@ -259,6 +456,18 @@ function currentInstance(p: LocalPlayer): WeaponInstance | null {
     case 'knife': return inv.knife;
     case 'c4': return inv.c4 ?? null;
   }
+}
+
+function isInBuyZoneForLocal(p: LocalPlayer, match: MatchState, world: import('./map/world').World): boolean {
+  const slot = match.players.get('local');
+  if (!slot) return false;
+  const c = p.character;
+  for (const z of world.buyZones) {
+    if (z.team !== slot.currentSide) continue;
+    if (c.pos.y < z.yMin - 0.2 || c.pos.y > z.yMax + 0.2) continue;
+    if (pointInPolygon2D(c.pos.x, c.pos.z, z.polygon)) return true;
+  }
+  return false;
 }
 
 bootstrap();

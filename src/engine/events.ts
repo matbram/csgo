@@ -55,6 +55,20 @@ export interface EventMap {
   };
   'combat:reload': { shooterId: string; weapon: string; tMs: number };
   'combat:weaponSwitch': { shooterId: string; weapon: string; tMs: number };
+  // Match
+  'match:bombPlanted': { site: 'A' | 'B'; x: number; y: number; z: number; tMs: number };
+  'match:bombDefused': { defuserId: string; x: number; y: number; z: number; tMs: number };
+  'match:bombExploded': { x: number; y: number; z: number; tMs: number };
+  'match:roundStart': { number: number; tMs: number };
+  'match:roundEnd': {
+    number: number;
+    winner: 'T' | 'CT';
+    reason: string;
+    playerWon: boolean;
+    tMs: number;
+  };
+  'match:halftime': { tMs: number };
+  'match:matchEnd': { winner: 'T' | 'CT'; tMs: number };
 }
 
 type Listener<K extends keyof EventMap> = (payload: EventMap[K]) => void;

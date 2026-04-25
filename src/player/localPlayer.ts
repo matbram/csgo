@@ -35,6 +35,7 @@ export class LocalPlayer {
       hp: 100,
       armor: 0,
       helmet: false,
+      hasKit: false,
       alive: true,
       inventory: inv,
       speed: 0,

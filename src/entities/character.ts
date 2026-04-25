@@ -24,6 +24,8 @@ export interface Character {
   hp: number;
   armor: number;
   helmet: boolean;
+  /** CT defuse kit. */
+  hasKit: boolean;
   alive: boolean;
   inventory: Inventory | null;
 
