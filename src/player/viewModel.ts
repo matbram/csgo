@@ -367,44 +367,78 @@ function buildViewModel(parent: Node, category: WeaponCategory): ViewModelHandle
     mkBox('vm-receiver', { width: 0.06, height: 0.06, depth: 0.55 }, [0, 0, 0.05], m.metal);
     // Barrel
     mkBox('vm-barrel', { width: 0.025, height: 0.025, depth: 0.35 }, [0, 0.005, 0.45], m.metal);
-    // Stock
+    // Muzzle device (slim collar at the front of the barrel)
+    mkBox('vm-muzzle', { width: 0.035, height: 0.035, depth: 0.04 }, [0, 0.005, 0.61], m.metal);
+    // Stock + cheek riser
     mkBox('vm-stock', { width: 0.05, height: 0.06, depth: 0.20 }, [0, -0.02, -0.20], m.wood);
+    mkBox('vm-stock-cheek', { width: 0.045, height: 0.02, depth: 0.18 }, [0, 0.025, -0.18], m.wood);
     // Magazine
     mkBox('vm-mag', { width: 0.05, height: 0.10, depth: 0.05 }, [0, -0.08, 0.05], m.polymer);
+    // Mag well lip — small accent below the receiver in front of the mag
+    mkBox('vm-magwell', { width: 0.058, height: 0.012, depth: 0.06 }, [0, -0.035, 0.05], m.metal);
     // Grip
     mkBox('vm-grip', { width: 0.04, height: 0.08, depth: 0.04 }, [0, -0.06, -0.08], m.polymer);
     // Front handguard
     mkBox('vm-handguard', { width: 0.06, height: 0.05, depth: 0.20 }, [0, -0.005, 0.20], m.wood);
-    // Sight
-    mkBox('vm-sight', { width: 0.02, height: 0.03, depth: 0.04 }, [0, 0.05, 0.10], m.metal);
+    // Rear iron sight + front post
+    mkBox('vm-rsight', { width: 0.026, height: 0.025, depth: 0.02 }, [0, 0.05, 0.00], m.metal);
+    mkBox('vm-fsight', { width: 0.012, height: 0.030, depth: 0.012 }, [0, 0.05, 0.40], m.metal);
+    // Top sight rail
+    mkBox('vm-rail', { width: 0.025, height: 0.008, depth: 0.30 }, [0, 0.038, 0.05], m.metal);
+    // Charging handle nub on the +x side of the receiver
+    mkBox('vm-charge', { width: 0.012, height: 0.012, depth: 0.045 }, [0.038, 0.012, 0.00], m.metal);
     muzzle.position.set(0, 0.005, 0.62);
   } else if (category === 'pistol') {
     // Slide
     mkBox('vm-slide', { width: 0.04, height: 0.04, depth: 0.18 }, [0, 0.02, 0.04], m.metal);
+    // Slide serrations (a single accent stripe is enough at FPS scale)
+    mkBox('vm-serrate', { width: 0.042, height: 0.012, depth: 0.025 }, [0, 0.04, -0.02], m.metal);
     // Frame/grip
     mkBox('vm-frame', { width: 0.04, height: 0.06, depth: 0.05 }, [0, -0.03, -0.02], m.polymer);
     mkBox('vm-grip', { width: 0.04, height: 0.10, depth: 0.04 }, [0, -0.08, -0.04], m.polymer);
-    // Trigger guard
+    // Magazine baseplate poking out below the grip
+    mkBox('vm-pmag', { width: 0.045, height: 0.010, depth: 0.045 }, [0, -0.137, -0.04], m.metal);
+    // Trigger guard + trigger
     mkBox('vm-trigger', { width: 0.03, height: 0.02, depth: 0.04 }, [0, -0.025, 0], m.metal);
+    // Front sight blade + rear notch
+    mkBox('vm-fsight', { width: 0.008, height: 0.012, depth: 0.008 }, [0, 0.045, 0.115], m.metal);
+    mkBox('vm-rsight', { width: 0.020, height: 0.008, depth: 0.012 }, [0, 0.045, -0.04], m.metal);
     muzzle.position.set(0, 0.02, 0.14);
   } else if (category === 'sniper') {
     // Receiver
     mkBox('vm-receiver', { width: 0.06, height: 0.06, depth: 0.55 }, [0, 0, 0.10], m.metal);
-    // Long barrel
+    // Long barrel + flash hider collar
     mkBox('vm-barrel', { width: 0.025, height: 0.025, depth: 0.55 }, [0, 0.005, 0.55], m.metal);
-    // Scope
+    mkBox('vm-muzzle', { width: 0.035, height: 0.035, depth: 0.05 }, [0, 0.005, 0.83], m.metal);
+    // Scope (body + objective bell + ocular bell + turret)
     mkBox('vm-scope', { width: 0.04, height: 0.06, depth: 0.18 }, [0, 0.07, 0.10], m.metal);
     mkBox('vm-scope-front', { width: 0.05, height: 0.07, depth: 0.04 }, [0, 0.07, 0.20], m.polymer);
+    mkBox('vm-scope-rear',  { width: 0.05, height: 0.07, depth: 0.04 }, [0, 0.07, 0.00], m.polymer);
+    mkBox('vm-scope-turret',{ width: 0.018, height: 0.025, depth: 0.022 }, [0, 0.108, 0.10], m.metal);
+    // Bolt handle on the +x side
+    mkBox('vm-bolt-arm', { width: 0.012, height: 0.012, depth: 0.05 }, [0.038, 0.005, 0.00], m.metal);
+    mkBox('vm-bolt-knob',{ width: 0.024, height: 0.024, depth: 0.024 }, [0.054, 0.005, 0.00], m.metal);
+    // Bipod stub — single fold-out stem under the front grip
+    mkBox('vm-bipod', { width: 0.014, height: 0.05, depth: 0.014 }, [0, -0.045, 0.42], m.metal);
+    // Magazine
+    mkBox('vm-mag', { width: 0.046, height: 0.06, depth: 0.10 }, [0, -0.05, 0.10], m.polymer);
     // Stock
     mkBox('vm-stock', { width: 0.06, height: 0.06, depth: 0.30 }, [0, -0.04, -0.20], m.wood);
+    mkBox('vm-stock-pad', { width: 0.064, height: 0.075, depth: 0.025 }, [0, -0.05, -0.36], m.polymer);
     // Grip
     mkBox('vm-grip', { width: 0.04, height: 0.08, depth: 0.04 }, [0, -0.06, -0.10], m.wood);
     muzzle.position.set(0, 0.005, 0.85);
   } else if (category === 'knife') {
     // Blade
     mkBox('vm-blade', { width: 0.02, height: 0.05, depth: 0.20 }, [0, 0, 0.10], m.metal);
+    // Blade fuller — a thin accent stripe along the side of the blade
+    mkBox('vm-blade-fuller', { width: 0.005, height: 0.015, depth: 0.16 }, [0.011, 0, 0.10], m.accent);
+    // Cross-guard
+    mkBox('vm-guard', { width: 0.05, height: 0.020, depth: 0.022 }, [0, 0, 0.005], m.metal);
     // Hilt
     mkBox('vm-hilt', { width: 0.025, height: 0.07, depth: 0.10 }, [0, -0.04, -0.05], m.wood);
+    // Pommel cap
+    mkBox('vm-pommel', { width: 0.030, height: 0.024, depth: 0.024 }, [0, -0.04, -0.108], m.metal);
     muzzle.position.set(0, 0, 0.20);
   } else if (category === 'grenade') {
     // Spherical body held forward in the throwing hand. A short pin

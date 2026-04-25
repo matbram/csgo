@@ -19,6 +19,7 @@ import { Engine } from '@babylonjs/core/Engines/engine';
 import { Constants } from '@babylonjs/core/Engines/constants';
 import { getScene } from '../engine/scene';
 import { events } from '../engine/events';
+import { settings } from '../engine/settings';
 import type { GrenadeSystem } from './system';
 
 const MAX_GRENADE_MESHES = 24;
@@ -26,6 +27,17 @@ const MAX_SMOKE_PS = 6;
 const MAX_FIRE_PS = 6;
 const SMOKE_DURATION_MS = 18_000;
 const FIRE_DURATION_MS = 7_000;
+
+/** Scale particle capacity / emit-rate by quality tier. The capacity
+ *  is fixed at PS construction time, but emit rate is read live so
+ *  toggling quality mid-round visibly thins fresh clouds. */
+function emitRateScale(): number {
+  switch (settings.get().quality) {
+    case 'low':    return 0.40;
+    case 'medium': return 0.70;
+    case 'high':   return 1.0;
+  }
+}
 
 interface PooledMesh { mesh: Mesh; }
 interface PooledPs { particles: ParticleSystem; inUse: boolean; }
@@ -105,7 +117,7 @@ export function installGrenadeVisuals(system: GrenadeSystem): void {
     ps.colorDead = new Color3(0.2, 0.2, 0.2).toColor4(0);
     ps.minSize = 1.0; ps.maxSize = 2.4;
     ps.minLifeTime = 4; ps.maxLifeTime = 8;
-    ps.emitRate = 200;
+    ps.emitRate = 200 * emitRateScale();
     ps.minEmitPower = 0.05; ps.maxEmitPower = 0.4;
     ps.gravity = new Vector3(0, 0.2, 0);
     ps.minAngularSpeed = 0; ps.maxAngularSpeed = Math.PI / 4;
@@ -121,7 +133,7 @@ export function installGrenadeVisuals(system: GrenadeSystem): void {
     ps.colorDead = new Color3(0.1, 0.05, 0.0).toColor4(0);
     ps.minSize = 0.4; ps.maxSize = 1.0;
     ps.minLifeTime = 0.6; ps.maxLifeTime = 1.4;
-    ps.emitRate = 220;
+    ps.emitRate = 220 * emitRateScale();
     ps.minEmitPower = 0.6; ps.maxEmitPower = 1.6;
     ps.gravity = new Vector3(0, 4, 0);
     ps.blendMode = ParticleSystem.BLENDMODE_ADD;
