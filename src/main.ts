@@ -32,11 +32,12 @@ import { LocalPlayer } from './player/localPlayer';
 import { ViewModel } from './player/viewModel';
 import { CombatSystem } from './combat/combat';
 import { FiringController } from './combat/firing';
-import { activeInstance, switchTo, makeInstance } from './weapons/inventory';
+import { activeInstance, switchTo, makeInstance, cycleScope } from './weapons/inventory';
 import type { WeaponInstance } from './weapons/inventory';
 import { installCombatVisuals } from './combat/visuals';
 import { installAudio, ensureAudioContext, setListenerPose, playSound } from './audio/audio';
 import { CombatHud } from './hud/combatHud';
+import { ScopeHud } from './hud/scopeHud';
 import { createDummy, syncDummy, type Dummy } from './entities/dummy';
 import type { Character } from './entities/character';
 import { pointInPolygon2D } from './map/world';
@@ -130,6 +131,7 @@ function bootstrap(): void {
   ensureCrosshair();
   const debugHud = new DebugHud(controller, world);
   const combatHud = new CombatHud();
+  const scopeHud = new ScopeHud();
   const roundHud = new RoundHud(hudRoot);
   const scoreboard = new Scoreboard(hudRoot);
   const c4Entity = new C4Entity();
@@ -204,7 +206,9 @@ function bootstrap(): void {
     const rX = Math.cos(yaw), rZ = -Math.sin(yaw);
 
     const inst = currentInstance(localPlayer);
-    const speedScale = inst?.def.moveSpeedScale ?? 1.0;
+    const speedScale = (inst && inst.scopeLevel > 0 && inst.def.scopedMoveSpeedScale !== undefined)
+      ? inst.def.scopedMoveSpeedScale
+      : (inst?.def.moveSpeedScale ?? 1.0);
     const wishX = fX * forward + rX * strafe;
     const wishZ = fZ * forward + rZ * strafe;
 
@@ -272,6 +276,25 @@ function bootstrap(): void {
       else if (input.wasPressed('Digit3')) switched = switchTo(invObj, 'knife', time.simMs);
       else if (input.wasPressed('Digit5') && invObj.c4) switched = switchTo(invObj, 'c4', time.simMs);
       if (switched) viewModel.setWeapon(activeInstance(invObj));
+    }
+
+    // Scope toggle (RMB). Only valid when alive, pointer-locked, no menus,
+    // and the active weapon supports scoping. The actual scope state lives
+    // on the WeaponInstance so it's reset by switchTo / refillInventory.
+    if (
+      input.wasMousePressed(2) &&
+      input.pointerLocked &&
+      !buyMenu.isOpen() &&
+      localPlayer.character.alive &&
+      inst &&
+      (inst.def.scopeLevels ?? 0) > 0
+    ) {
+      cycleScope(inst);
+    }
+    // If the player died this tick (or any time their inventory is in a
+    // dead state), drop scope so the camera/HUD can return to default.
+    if (!localPlayer.character.alive && inst && inst.scopeLevel > 0) {
+      inst.scopeLevel = 0;
     }
 
     // Firing — disabled during freeze/end and while buy menu open.
@@ -411,11 +434,28 @@ function bootstrap(): void {
 
   // ---- Render systems ----
   loop.registerRender((renderDtMs) => {
+    // Drive scope-related state BEFORE syncRender so the FOV lerp uses the
+    // latest target this frame.
+    const renderInst = currentInstance(localPlayer);
+    const buyOpen = buyMenu.isOpen();
+    const effectiveScopeLevel =
+      (localPlayer.character.alive && !buyOpen && renderInst && renderInst.scopeLevel > 0)
+        ? renderInst.scopeLevel
+        : 0;
+    if (effectiveScopeLevel > 0 && renderInst?.def.scopeFovDeg) {
+      const fovDeg = renderInst.def.scopeFovDeg[effectiveScopeLevel - 1] ?? renderInst.def.scopeFovDeg[0]!;
+      fps.setTargetFovRad((fovDeg * Math.PI) / 180);
+    } else {
+      fps.resetFov();
+    }
+    viewModel.setVisible(effectiveScopeLevel === 0);
+    scopeHud.setLevel(effectiveScopeLevel);
+
     fps.syncRender();
     // Keep the view model in sync with whatever weapon is currently active.
     // This catches purchases (which auto-switch the active slot) without
     // requiring an explicit setWeapon call from every code path.
-    viewModel.setWeapon(currentInstance(localPlayer));
+    viewModel.setWeapon(renderInst);
     viewModel.update(controller.state.speed, renderDtMs);
     for (const d of dummies) syncDummy(d);
     c4Entity.update(match.round?.bomb ?? null, time.simMs);

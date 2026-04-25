@@ -64,6 +64,14 @@ class InputState {
     }
   };
 
+  private readonly onContextMenu = (e: MouseEvent) => {
+    // Right-click is used in-game (e.g. AWP scope), so suppress the
+    // browser context menu when the click lands on the render canvas.
+    if (this._canvas && e.target === this._canvas) {
+      e.preventDefault();
+    }
+  };
+
   private readonly onPointerLockChange = () => {
     const locked = document.pointerLockElement === this._canvas;
     if (locked === this._pointerLocked) return;
@@ -104,6 +112,7 @@ class InputState {
     window.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('blur', this.onBlur);
+    window.addEventListener('contextmenu', this.onContextMenu);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
   }
 
@@ -115,6 +124,7 @@ class InputState {
     window.removeEventListener('mousedown', this.onMouseDown);
     window.removeEventListener('mouseup', this.onMouseUp);
     window.removeEventListener('blur', this.onBlur);
+    window.removeEventListener('contextmenu', this.onContextMenu);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     this._bound = false;
     this._canvas = null;

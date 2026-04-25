@@ -19,6 +19,10 @@ export interface WeaponInstance {
   /** Spray index — increments on each shot in a continuous burst,
    *  resets to 0 when (now - lastFireMs) > recoilDecayMs. */
   sprayIndex: number;
+  /** Current scope zoom level. 0 = unscoped; 1..def.scopeLevels = zoom step.
+   *  Always 0 for weapons without a scope. Reset to 0 on weapon switch,
+   *  reload, fire (for sniper-style weapons), and round/death. */
+  scopeLevel: number;
 }
 
 export function makeInstance(id: WeaponId, opts?: { mag?: number; reserve?: number }): WeaponInstance {
@@ -31,6 +35,7 @@ export function makeInstance(id: WeaponId, opts?: { mag?: number; reserve?: numb
     stateUntilMs: 0,
     lastFireMs: -Infinity,
     sprayIndex: 0,
+    scopeLevel: 0,
   };
 }
 
@@ -70,7 +75,9 @@ export function bestSlot(inv: Inventory): InventorySlotKey {
   return 'knife';
 }
 
-/** Switch to slot if it has an instance, applying deploy delay. */
+/** Switch to slot if it has an instance, applying deploy delay. The
+ *  outgoing instance loses its scope, so coming back to it doesn't
+ *  surprise the player with stale zoom. */
 export function switchTo(inv: Inventory, slot: InventorySlotKey, nowMs: number): boolean {
   let inst: WeaponInstance | undefined;
   switch (slot) {
@@ -81,11 +88,27 @@ export function switchTo(inv: Inventory, slot: InventorySlotKey, nowMs: number):
   }
   if (!inst) return false;
   if (inv.active === slot) return false;
+  // Drop scope on the outgoing weapon.
+  const outgoing = activeInstance(inv);
+  if (outgoing) outgoing.scopeLevel = 0;
   inv.active = slot;
   inst.state = 'deploying';
   inst.stateUntilMs = nowMs + inst.def.deployMs;
   inst.sprayIndex = 0;
+  inst.scopeLevel = 0;
   return true;
+}
+
+/** Cycle the scope on the given instance: 0 → 1 → … → max → 0. Returns the
+ *  new scope level. No-op for weapons without a scope. */
+export function cycleScope(inst: WeaponInstance): number {
+  const max = inst.def.scopeLevels ?? 0;
+  if (max <= 0) return 0;
+  // Don't allow scoping while still deploying or reloading — feels jarring
+  // and would let the player hide their reload tell.
+  if (inst.state === 'deploying' || inst.state === 'reloading') return inst.scopeLevel;
+  inst.scopeLevel = (inst.scopeLevel + 1) % (max + 1);
+  return inst.scopeLevel;
 }
 
 /** Map slot key to inventory key — separate fns for type help. */

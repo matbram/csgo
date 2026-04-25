@@ -196,8 +196,10 @@ export function installCombatVisuals(): void {
   muzzleParticles.maxAngularSpeed = Math.PI;
   muzzleParticles.start();
 
-  events.on('combat:fire', ({ ox, oy, oz }) => {
+  events.on('combat:fire', ({ ox, oy, oz, weapon }) => {
     if (!muzzleParticles) return;
+    // No muzzle flash for melee — there's no muzzle.
+    if (weapon === 'knife') return;
     muzzleParticles.emitter = new Vector3(ox, oy, oz);
     muzzleParticles.manualEmitCount = 6;
   });

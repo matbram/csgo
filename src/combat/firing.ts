@@ -48,6 +48,9 @@ export class FiringController {
     aim: FireRequest,
     input: FiringInput,
   ): boolean {
+    // Melee weapons have no magazine — they're always "loaded" once deployed.
+    const isMelee = inst.def.fireMode === 'melee';
+
     // 1) Advance state transitions.
     if ((inst.state === 'deploying' || inst.state === 'reloading') && nowMs >= inst.stateUntilMs) {
       if (inst.state === 'reloading') {
@@ -57,7 +60,7 @@ export class FiringController {
         inst.ammoMag += take;
         inst.ammoReserve -= take;
       }
-      inst.state = inst.ammoMag > 0 ? 'ready' : 'empty';
+      inst.state = (isMelee || inst.ammoMag > 0) ? 'ready' : 'empty';
     }
 
     // 2) Decay spray.
@@ -66,19 +69,23 @@ export class FiringController {
     }
 
     // 3) Reload request. Allowed from 'ready' or 'empty' — i.e. anytime the
-    //    weapon isn't currently deploying or already reloading.
+    //    weapon isn't currently deploying or already reloading. Melee
+    //    weapons have no magazine so reload is a no-op for them.
     const canReload = (inst.state === 'ready' || inst.state === 'empty');
-    if (input.reloadEdge && canReload && inst.def.magazine > 0) {
+    if (input.reloadEdge && canReload && inst.def.magazine > 0 && !isMelee) {
       if (inst.ammoMag < inst.def.magazine && inst.ammoReserve > 0) {
         inst.state = 'reloading';
         inst.stateUntilMs = nowMs + inst.def.reloadMs;
+        // Reloading unscopes — both because the animation hides the scope
+        // optic and so the player can see the world while reloading.
+        if (inst.scopeLevel > 0) inst.scopeLevel = 0;
         events.emit('combat:reload', { shooterId: shooter.id, weapon: inst.def.id, tMs: nowMs });
         return false;
       }
     }
 
     // 4) Fire if allowed.
-    const canFire = inst.state === 'ready' && inst.ammoMag > 0;
+    const canFire = inst.state === 'ready' && (isMelee || inst.ammoMag > 0);
     if (!canFire) return false;
 
     const fireIntervalMs = 60_000 / inst.def.rpm;
@@ -94,12 +101,16 @@ export class FiringController {
 
     if (!shouldFire) return false;
 
-    // Compute inaccuracy at fire time.
-    const inacc = computeInaccuracy(inst.def, {
+    // Compute inaccuracy at fire time. A scoped weapon trades movement for
+    // pinpoint precision — apply the configured multiplier when active.
+    let inacc = computeInaccuracy(inst.def, {
       speed: shooter.speed,
       inAir: shooter.inAir,
       crouching: shooter.crouching,
     });
+    if (inst.scopeLevel > 0 && inst.def.scopedInaccuracyMul !== undefined) {
+      inacc *= inst.def.scopedInaccuracyMul;
+    }
 
     const result = this.combat.fire({
       ox: aim.ox, oy: aim.oy, oz: aim.oz,
@@ -118,18 +129,28 @@ export class FiringController {
       sprayIndex: inst.sprayIndex,
       tMs: nowMs,
     });
-    events.emit('combat:tracer', {
-      sx: aim.ox, sy: aim.oy, sz: aim.oz,
-      ex: result.endX, ey: result.endY, ez: result.endZ,
-      tMs: nowMs,
-    });
+    // Tracers are bullets — skip for melee swings.
+    if (!isMelee) {
+      events.emit('combat:tracer', {
+        sx: aim.ox, sy: aim.oy, sz: aim.oz,
+        ex: result.endX, ey: result.endY, ez: result.endZ,
+        tMs: nowMs,
+      });
+    }
 
     // Update state.
-    inst.ammoMag -= 1;
     inst.lastFireMs = nowMs;
     inst.sprayIndex += 1;
-    if (inst.ammoMag <= 0) {
-      inst.state = 'empty';
+    if (!isMelee) {
+      inst.ammoMag -= 1;
+      if (inst.ammoMag <= 0) {
+        inst.state = 'empty';
+      }
+    }
+    // Firing a scoped weapon drops scope so the next shot uses normal aim
+    // and the view model returns. CS:GO behavior for sniper rifles.
+    if (inst.scopeLevel > 0) {
+      inst.scopeLevel = 0;
     }
     return true;
   }

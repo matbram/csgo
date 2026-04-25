@@ -69,6 +69,7 @@ function refillInventory(inv: Inventory): void {
     i.stateUntilMs = 0;
     i.lastFireMs = -Infinity;
     i.sprayIndex = 0;
+    i.scopeLevel = 0;
   };
   if (inv.primary) refill(inv.primary);
   if (inv.secondary) refill(inv.secondary);

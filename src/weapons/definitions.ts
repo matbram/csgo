@@ -57,6 +57,17 @@ export interface WeaponDef {
   /** Sound IDs (used by audio module). */
   fireSound: string;
   reloadSound: string;
+  /** Number of scope zoom levels (0 = no scope). For the AWP this is 2:
+   *  one mid-zoom and one tight zoom, cycling 0→1→2→0 on RMB. */
+  scopeLevels?: number;
+  /** Camera vertical FOV (degrees) per scope level. Index 0 corresponds
+   *  to scopeLevel=1, index 1 to scopeLevel=2, etc. Required when
+   *  `scopeLevels > 0`. */
+  scopeFovDeg?: ReadonlyArray<number>;
+  /** Inaccuracy multiplier while scoped (any level). 0..1. */
+  scopedInaccuracyMul?: number;
+  /** Movement speed scale while scoped (any level). Replaces moveSpeedScale. */
+  scopedMoveSpeedScale?: number;
 }
 
 /** AK-47 spray pattern (degrees). Approximation of the real pattern:
@@ -290,6 +301,10 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     killReward: 100,
     fireSound: 'awp_fire',
     reloadSound: 'awp_reload',
+    scopeLevels: 2,
+    scopeFovDeg: [40, 10],
+    scopedInaccuracyMul: 0.05,
+    scopedMoveSpeedScale: 0.30,
   },
   knife: {
     id: 'knife',

@@ -85,6 +85,8 @@ export class ViewModel {
   /** Reload tween (0..1, 1 = mid-reload). */
   private reloadProgress = 0;
   private isReloading = false;
+  /** Whether the view model meshes should currently be rendered. */
+  private visible = true;
 
   constructor(parent: Node) {
     const scene = getScene();
@@ -105,6 +107,11 @@ export class ViewModel {
     const handle = buildViewModel(this.hand, inst.def.category);
     this.current = handle;
     this.currentWeaponId = inst.def.id;
+    // Re-apply current visibility so a hot weapon swap during scope still
+    // hides the new mesh.
+    if (!this.visible) {
+      for (const m of handle.parts) m.setEnabled(false);
+    }
   }
 
   /** Add a fire kick. Called by the firing controller after a successful shot. */
@@ -116,6 +123,15 @@ export class ViewModel {
 
   setReloading(active: boolean): void {
     this.isReloading = active;
+  }
+
+  /** Hide or show the weapon mesh (e.g. while a sniper scope is active). */
+  setVisible(visible: boolean): void {
+    if (visible === this.visible) return;
+    this.visible = visible;
+    if (this.current) {
+      for (const m of this.current.parts) m.setEnabled(visible);
+    }
   }
 
   /** Returns the muzzle world position (used as bullet origin and for

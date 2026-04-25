@@ -66,6 +66,69 @@ html, body {
   top: 50%; left: 0; right: 0;
   height: 2px; transform: translateY(-50%);
 }
+.crosshair.hidden { display: none; }
+
+/* ---------- Sniper scope overlay ---------- */
+.scope-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+}
+.scope-overlay.hidden { display: none; }
+/* The circle's outer box-shadow masks the entire viewport outside the
+ * lens, so we don't need separate side-bar elements. */
+.scope-bar { display: none; }
+.scope-circle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100vh;
+  height: 100vh;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.92), inset 0 0 0 4px #000, inset 0 0 24px rgba(0,0,0,0.6);
+}
+.scope-cross {
+  position: absolute;
+  background: #000;
+}
+.scope-cross-h {
+  left: 0; right: 0;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+  box-shadow: 0 0 1px rgba(0,0,0,0.7);
+}
+.scope-cross-v {
+  top: 0; bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  box-shadow: 0 0 1px rgba(0,0,0,0.7);
+}
+.scope-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  background: #000;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+.scope-level {
+  position: absolute;
+  right: calc(50% - 8vh);
+  top: calc(50% + 22vh);
+  color: #f4ead7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  letter-spacing: 0.18em;
+  text-shadow: 0 0 4px #000;
+}
+.scope-overlay.scope-zoom-2 .scope-cross { background: #b6e9a0; }
+.scope-overlay.scope-zoom-2 .scope-dot { background: #b6e9a0; }
 
 /* ---------- Debug overlay ---------- */
 .debug-panel {

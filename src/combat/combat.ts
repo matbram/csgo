@@ -81,11 +81,17 @@ export class CombatSystem {
       scatterDeg,
     );
 
+    // Melee weapons are short-range — anything past the falloff envelope
+    // is wasted compute and would emit a kill-from-the-void event.
+    const maxRange = weapon.fireMode === 'melee'
+      ? Math.max(0.5, weapon.falloffStartM + weapon.falloffRangeM)
+      : MAX_RANGE_M;
+
     // Raycast world.
     const worldHit = this.world.rayWorld(
       opts.ox, opts.oy, opts.oz,
       finalDir.x, finalDir.y, finalDir.z,
-      MAX_RANGE_M,
+      maxRange,
     );
     const worldT = worldHit?.t ?? Infinity;
 
@@ -181,11 +187,11 @@ export class CombatSystem {
 
     // Miss into the void.
     return {
-      endX: opts.ox + finalDir.x * MAX_RANGE_M,
-      endY: opts.oy + finalDir.y * MAX_RANGE_M,
-      endZ: opts.oz + finalDir.z * MAX_RANGE_M,
+      endX: opts.ox + finalDir.x * maxRange,
+      endY: opts.oy + finalDir.y * maxRange,
+      endZ: opts.oz + finalDir.z * maxRange,
       kind: 'miss',
-      distance: MAX_RANGE_M,
+      distance: maxRange,
     };
   }
 }
