@@ -47,6 +47,7 @@ import { RoundHud } from './hud/roundHud';
 import { Scoreboard } from './hud/scoreboard';
 import { BuyMenu } from './hud/buyMenu';
 import { C4Entity } from './entities/c4';
+import { BombHud } from './hud/bombHud';
 import { purchaseWeapon, purchaseArmor, purchaseKit } from './match/purchase';
 import type { Side } from './match/economy';
 
@@ -132,6 +133,7 @@ function bootstrap(): void {
   const roundHud = new RoundHud(hudRoot);
   const scoreboard = new Scoreboard(hudRoot);
   const c4Entity = new C4Entity();
+  const bombHud = new BombHud(hudRoot);
   const buyMenu = new BuyMenu(hudRoot, (req) => {
     const slot = match.players.get('local');
     if (!slot) return { ok: false, reason: 'No slot' };
@@ -432,6 +434,7 @@ function bootstrap(): void {
     combatHud.update(localPlayer.character, performance.now());
     roundHud.update(match, characters, time.simMs);
     scoreboard.update(match, characters);
+    bombHud.update(localPlayer.character, match.round?.bomb ?? null, world);
   });
 
   // ---- Run loop ----

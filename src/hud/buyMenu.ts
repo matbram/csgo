@@ -37,6 +37,10 @@ export class BuyMenu {
   private visible = false;
   private ctx: BuyContext | null = null;
   private readonly handler: PurchaseHandler;
+  /** Cached fingerprint of the last-rendered context. We only rebuild the
+   *  grid when this changes, so per-tick refreshes don't destroy buttons
+   *  mid-click. */
+  private lastRenderHash = '';
 
   constructor(host: HTMLElement, handler: PurchaseHandler) {
     this.host = host;
@@ -62,6 +66,7 @@ export class BuyMenu {
   open(ctx: BuyContext): void {
     this.ctx = ctx;
     this.visible = true;
+    this.lastRenderHash = '';        // force first render
     this.render();
     this.root.classList.remove('hidden');
   }
@@ -78,7 +83,9 @@ export class BuyMenu {
 
   isOpen(): boolean { return this.visible; }
 
-  /** Caller should poll this at sim tick to keep the displayed money/availability live. */
+  /** Caller polls this each sim tick to keep the menu live. We only
+   *  rebuild the DOM if the relevant context changed, so buttons aren't
+   *  recreated mid-click. */
   refresh(ctx: BuyContext): void {
     this.ctx = ctx;
     if (!this.visible) return;
@@ -86,6 +93,9 @@ export class BuyMenu {
       this.close();
       return;
     }
+    const hash = hashCtx(ctx);
+    if (hash === this.lastRenderHash) return;
+    this.lastRenderHash = hash;
     this.render();
   }
 
@@ -140,8 +150,18 @@ export class BuyMenu {
       return;
     }
     this.hint.textContent = `Purchased ${it.label}.`;
-    if (this.ctx) this.render();
+    // Force a fresh render so the new state (lower money, owned weapon,
+    // etc.) shows immediately rather than waiting for the next refresh().
+    this.lastRenderHash = '';
   }
+}
+
+function hashCtx(c: BuyContext): string {
+  return [
+    c.side, c.money, c.inBuyZone ? 1 : 0, c.buyPhase ? 1 : 0,
+    c.helmet ? 1 : 0, c.armor, c.hasKit ? 1 : 0,
+    c.hasPrimary ?? '-', c.hasSecondary ?? '-',
+  ].join('|');
 }
 
 interface BuyItem {
