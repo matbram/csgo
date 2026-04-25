@@ -410,6 +410,10 @@ function bootstrap(): void {
   // ---- Render systems ----
   loop.registerRender((renderDtMs) => {
     fps.syncRender();
+    // Keep the view model in sync with whatever weapon is currently active.
+    // This catches purchases (which auto-switch the active slot) without
+    // requiring an explicit setWeapon call from every code path.
+    viewModel.setWeapon(currentInstance(localPlayer));
     viewModel.update(controller.state.speed, renderDtMs);
     for (const d of dummies) syncDummy(d);
     c4Entity.update(match.round?.bomb ?? null, time.simMs);

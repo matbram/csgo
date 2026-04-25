@@ -51,6 +51,7 @@ export function resetCharacterForRound(
   if (!opts.keepInventory) {
     c.armor = 0;
     c.helmet = false;
+    c.hasKit = false;
     c.inventory = defaultInventory(side);
   } else if (c.inventory) {
     // Refill ammo to full magazines, reset state machine to ready.

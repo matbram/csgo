@@ -112,12 +112,17 @@ export class BuyMenu {
       list.className = 'buy-list';
       for (const it of g.items) {
         const tile = document.createElement('button');
-        tile.className = 'buy-tile';
-        tile.disabled = !it.available;
+        tile.className = 'buy-tile' + (it.available ? '' : ' unavailable');
+        // Note: not using `disabled` so the click handler still fires and
+        // can surface the reason ("Need $X more", "Not on your side", etc.)
+        // — silently dead buttons are bad UX.
         tile.title = it.note ?? '';
+        const subline = it.available
+          ? (it.cost === 0 ? 'OWNED' : `$${it.cost}`)
+          : (it.note ? it.note : `$${it.cost}`);
         tile.innerHTML = `
           <div class="buy-tile-name">${escapeHtml(it.label)}</div>
-          <div class="buy-tile-cost">${it.cost === 0 ? 'OWNED' : `$${it.cost}`}</div>
+          <div class="buy-tile-cost">${escapeHtml(subline)}</div>
         `;
         tile.addEventListener('click', () => this.handle(it));
         list.appendChild(tile);

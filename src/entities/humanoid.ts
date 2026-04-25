@@ -86,12 +86,16 @@ export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
 }
 
 /** Sync a humanoid to a character's pose. Crouching shrinks the legs
- *  (they squat) and lowers the torso/head accordingly. */
+ *  (they squat) and lowers the torso/head accordingly. Also resets all
+ *  three rotation axes so a previously-tipped-over corpse stands back up
+ *  when the character respawns. */
 export function syncHumanoidPose(parts: HumanoidParts, x: number, y: number, z: number, yaw: number, eye: number, height: number): void {
   parts.root.position.set(x, y, z);
   // Babylon default: rotation.y rotates around +Y, positive turns from +Z to +X
   // (matches our yaw convention where forward = (sin yaw, 0, cos yaw)).
+  parts.root.rotation.x = 0;
   parts.root.rotation.y = yaw;
+  parts.root.rotation.z = 0;
 
   // Scale legs by height-to-stand ratio (1.80 standing → factor 1, crouching ~1.30 → 0.72)
   const legScale = Math.max(0.55, height / 1.80);
@@ -99,8 +103,7 @@ export function syncHumanoidPose(parts: HumanoidParts, x: number, y: number, z: 
   parts.legs.position.y = 0.5 * legScale;
 
   parts.body.position.y = legScale * 0.95 + 0.10;
-  parts.head.position.y = y === y ? eye + 0.10 : 1.75;
-  // Head position is relative to root; reset:
+  // Head position is relative to root.
   parts.head.position.set(0, eye + 0.10, 0);
 }
 

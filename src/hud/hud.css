@@ -369,6 +369,13 @@ html, body {
   background: rgba(255, 210, 138, 0.18);
   border-color: rgba(255, 210, 138, 0.5);
 }
+.buy-tile.unavailable {
+  opacity: 0.5;
+}
+.buy-tile.unavailable .buy-tile-cost {
+  color: #d8a478;
+  font-size: 11px;
+}
 .buy-tile:disabled {
   opacity: 0.45;
   cursor: not-allowed;

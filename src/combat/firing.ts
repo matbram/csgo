@@ -65,8 +65,10 @@ export class FiringController {
       inst.sprayIndex = 0;
     }
 
-    // 3) Reload request.
-    if (input.reloadEdge && inst.state === 'ready' && inst.def.magazine > 0) {
+    // 3) Reload request. Allowed from 'ready' or 'empty' — i.e. anytime the
+    //    weapon isn't currently deploying or already reloading.
+    const canReload = (inst.state === 'ready' || inst.state === 'empty');
+    if (input.reloadEdge && canReload && inst.def.magazine > 0) {
       if (inst.ammoMag < inst.def.magazine && inst.ammoReserve > 0) {
         inst.state = 'reloading';
         inst.stateUntilMs = nowMs + inst.def.reloadMs;
