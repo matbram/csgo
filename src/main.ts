@@ -32,7 +32,7 @@ import { LocalPlayer } from './player/localPlayer';
 import { ViewModel } from './player/viewModel';
 import { CombatSystem } from './combat/combat';
 import { FiringController } from './combat/firing';
-import { activeInstance, switchTo, makeInstance, cycleScope } from './weapons/inventory';
+import { activeInstance, switchTo, makeInstance, cycleScope, nextScrollSlot } from './weapons/inventory';
 import type { WeaponInstance } from './weapons/inventory';
 import { installCombatVisuals } from './combat/visuals';
 import { installAudio, ensureAudioContext, setListenerPose, playSound } from './audio/audio';
@@ -267,14 +267,31 @@ function bootstrap(): void {
       }
     }
 
-    // Weapon switching.
+    // Weapon switching — number keys for direct slot access, scroll wheel
+    // to cycle through owned slots in primary→secondary→knife→c4 order.
+    // Always drain the wheel buffer, even when ineligible, so scroll
+    // motion during freeze/menu/dead doesn't queue up surprise switches.
     const invObj = localPlayer.character.inventory;
+    const wheelTicks = input.consumeWheelTicks();
+    const wheelEligible = !!invObj && !movementLocked && input.pointerLocked
+      && !buyMenu.isOpen() && localPlayer.character.alive;
     if (invObj && !movementLocked) {
       let switched = false;
       if (input.wasPressed('Digit1') && invObj.primary) switched = switchTo(invObj, 'primary', time.simMs);
       else if (input.wasPressed('Digit2') && invObj.secondary) switched = switchTo(invObj, 'secondary', time.simMs);
       else if (input.wasPressed('Digit3')) switched = switchTo(invObj, 'knife', time.simMs);
       else if (input.wasPressed('Digit5') && invObj.c4) switched = switchTo(invObj, 'c4', time.simMs);
+      else if (wheelEligible && wheelTicks !== 0) {
+        // Each tick is one slot step. Wheel-down (positive) goes forward,
+        // wheel-up (negative) goes backward. Cap so a fling doesn't loop.
+        const dir: 1 | -1 = wheelTicks > 0 ? 1 : -1;
+        const steps = Math.min(Math.abs(wheelTicks), 4);
+        for (let i = 0; i < steps; i++) {
+          const target = nextScrollSlot(invObj, dir);
+          if (!target) break;
+          if (switchTo(invObj, target, time.simMs)) switched = true;
+        }
+      }
       if (switched) viewModel.setWeapon(activeInstance(invObj));
     }
 
@@ -325,7 +342,11 @@ function bootstrap(): void {
         reloadEdge: input.wasPressed('KeyR'),
       });
       if (fired) {
-        viewModel.addKick(activeInst.def.cameraKickDeg.x * 0.05, activeInst.def.cameraKickDeg.y * 0.05, 0.04);
+        if (activeInst.def.fireMode === 'melee') {
+          viewModel.triggerSwing();
+        } else {
+          viewModel.addKick(activeInst.def.cameraKickDeg.x * 0.05, activeInst.def.cameraKickDeg.y * 0.05, 0.04);
+        }
       }
       viewModel.setReloading(activeInst.state === 'reloading');
     }

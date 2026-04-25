@@ -26,6 +26,57 @@ interface ViewModelMaterials {
   accent: StandardMaterial;
 }
 
+/** Total swing animation duration in ms. Calibrated to fit inside the
+ *  knife's fire interval (90 rpm → 667 ms) with margin for the reset. */
+const SWING_DURATION_MS = 280;
+
+interface SwingPose {
+  posX: number; posY: number; posZ: number;
+  rotX: number; rotY: number; rotZ: number;
+}
+
+const ZERO_SWING: SwingPose = { posX: 0, posY: 0, posZ: 0, rotX: 0, rotY: 0, rotZ: 0 };
+
+/** Hand-tuned three-phase melee curve. `dir` is +1/-1 to alternate slash
+ *  direction across consecutive swings — purely cosmetic. */
+function swingCurve(t: number, dir: number): SwingPose {
+  if (t >= 1) return ZERO_SWING;
+  if (t < 0.30) {
+    // Wind-up: pull back and up. k goes 0 → 1.
+    const k = t / 0.30;
+    return {
+      posX: -0.05 * k * dir,
+      posY:  0.04 * k,
+      posZ: -0.06 * k,
+      rotX: -0.55 * k,
+      rotY:  0.20 * k * dir,
+      rotZ:  0.30 * k * dir,
+    };
+  }
+  if (t < 0.55) {
+    // Strike: hard thrust forward + downward. k goes 0 → 1, fast.
+    const k = (t - 0.30) / 0.25;
+    return {
+      posX: -0.05 * dir + 0.15 * k * dir,
+      posY:  0.04 - 0.10 * k,
+      posZ: -0.06 + 0.26 * k,
+      rotX: -0.55 + 0.95 * k,
+      rotY:  0.20 * dir - 0.40 * k * dir,
+      rotZ:  0.30 * dir - 0.55 * k * dir,
+    };
+  }
+  // Recovery: ease back to neutral.
+  const k = 1 - (t - 0.55) / 0.45;
+  return {
+    posX: 0.10 * k * dir,
+    posY: -0.06 * k,
+    posZ: 0.20 * k,
+    rotX: 0.40 * k,
+    rotY: -0.20 * k * dir,
+    rotZ: -0.25 * k * dir,
+  };
+}
+
 let mats: ViewModelMaterials | null = null;
 function getMats(): ViewModelMaterials {
   if (mats) return mats;
@@ -87,6 +138,12 @@ export class ViewModel {
   private isReloading = false;
   /** Whether the view model meshes should currently be rendered. */
   private visible = true;
+  /** Melee swing tween (0..1). 1 means no swing in progress; advances to 1
+   *  over `SWING_DURATION_MS` once `triggerSwing()` is called. */
+  private swingT = 1;
+  /** Direction sign for the current swing. Alternates each swing so
+   *  consecutive slashes don't look identical. */
+  private swingDir = 1;
 
   constructor(parent: Node) {
     const scene = getScene();
@@ -123,6 +180,13 @@ export class ViewModel {
 
   setReloading(active: boolean): void {
     this.isReloading = active;
+  }
+
+  /** Kick off a melee swing tween. The animation is short (~280ms) so it
+   *  comfortably fits inside a knife's fire interval (90 RPM ≈ 667ms). */
+  triggerSwing(): void {
+    this.swingT = 0;
+    this.swingDir = -this.swingDir;
   }
 
   /** Hide or show the weapon mesh (e.g. while a sniper scope is active). */
@@ -175,13 +239,22 @@ export class ViewModel {
     reloadOffsetY = -0.10 * this.reloadProgress;
     reloadRotZ = -0.4 * this.reloadProgress;
 
+    // Swing tween. Three phases:
+    //   wind-up (0.00 → 0.30): pull back/up
+    //   strike  (0.30 → 0.55): thrust forward
+    //   recover (0.55 → 1.00): return to neutral
+    if (this.swingT < 1) {
+      this.swingT = Math.min(1, this.swingT + dtMs / SWING_DURATION_MS);
+    }
+    const swing = swingCurve(this.swingT, this.swingDir);
+
     const base = this.hand.position;
-    base.x = 0.18 + bobX + this.smoothedKickX * 0.04;
-    base.y = -0.18 + bobY + reloadOffsetY - this.smoothedKickY * 0.012;
-    base.z = 0.32 - this.smoothedKickZ * 0.18;
-    this.hand.rotation.x = this.smoothedRotX;
-    this.hand.rotation.y = this.smoothedRotY;
-    this.hand.rotation.z = reloadRotZ;
+    base.x = 0.18 + bobX + this.smoothedKickX * 0.04 + swing.posX;
+    base.y = -0.18 + bobY + reloadOffsetY - this.smoothedKickY * 0.012 + swing.posY;
+    base.z = 0.32 - this.smoothedKickZ * 0.18 + swing.posZ;
+    this.hand.rotation.x = this.smoothedRotX + swing.rotX;
+    this.hand.rotation.y = this.smoothedRotY + swing.rotY;
+    this.hand.rotation.z = reloadRotZ + swing.rotZ;
   }
 
   private disposeCurrent(): void {

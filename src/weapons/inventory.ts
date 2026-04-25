@@ -75,6 +75,34 @@ export function bestSlot(inv: Inventory): InventorySlotKey {
   return 'knife';
 }
 
+/** Canonical scroll-wheel cycle order. Matches CS:GO: primary, secondary,
+ *  knife, c4. Slots without an instance are skipped at cycle time. */
+const SCROLL_ORDER: ReadonlyArray<InventorySlotKey> = ['primary', 'secondary', 'knife', 'c4'];
+
+function slotInstance(inv: Inventory, slot: InventorySlotKey): WeaponInstance | undefined {
+  switch (slot) {
+    case 'primary': return inv.primary;
+    case 'secondary': return inv.secondary;
+    case 'knife': return inv.knife;
+    case 'c4': return inv.c4;
+  }
+}
+
+/** Return the next inventory slot the wheel should land on, given a step
+ *  direction (+1 = next, -1 = previous). Skips empty slots. Returns null
+ *  if there's only one owned slot (nothing else to switch to). */
+export function nextScrollSlot(inv: Inventory, dir: 1 | -1): InventorySlotKey | null {
+  const startIdx = SCROLL_ORDER.indexOf(inv.active);
+  if (startIdx < 0) return null;
+  const n = SCROLL_ORDER.length;
+  for (let step = 1; step <= n; step++) {
+    const idx = (startIdx + dir * step + n * n) % n;
+    const slot = SCROLL_ORDER[idx]!;
+    if (slotInstance(inv, slot)) return slot;
+  }
+  return null;
+}
+
 /** Switch to slot if it has an instance, applying deploy delay. The
  *  outgoing instance loses its scope, so coming back to it doesn't
  *  surprise the player with stale zoom. */

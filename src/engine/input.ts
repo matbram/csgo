@@ -20,6 +20,13 @@ class InputState {
   private mousePressedThisTick = 0;        // edges
   private mouseReleasedThisTick = 0;
 
+  /** Wheel deltaY accumulated since last `consumeWheelTicks()`. We expose
+   *  this as an integer count of "ticks" — each ~100 of native deltaY is
+   *  one tick — so trackpads (which send fractional deltas) and mice
+   *  (which send larger discrete deltas) both produce one switch per
+   *  notch as expected. */
+  private wheelAccum = 0;
+
   private _pointerLocked = false;
   private _bound = false;
   private _canvas: HTMLCanvasElement | null = null;
@@ -64,6 +71,16 @@ class InputState {
     }
   };
 
+  private readonly onWheel = (e: WheelEvent) => {
+    if (!this._pointerLocked) return;
+    // Browsers report deltas in different units — pixels (0), lines (1),
+    // pages (2). Normalize to a unit roughly matching one mouse notch.
+    const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
+    this.wheelAccum += e.deltaY * unit;
+    // Don't let the page scroll under the canvas while the game is live.
+    e.preventDefault();
+  };
+
   private readonly onContextMenu = (e: MouseEvent) => {
     // Right-click is used in-game (e.g. AWP scope), so suppress the
     // browser context menu when the click lands on the render canvas.
@@ -86,6 +103,7 @@ class InputState {
       this.mouseDownButtons = 0;
       this.mousePressedThisTick = 0;
       this.mouseReleasedThisTick = 0;
+      this.wheelAccum = 0;
     }
     events.emit('input:pointerLockChanged', { locked });
   };
@@ -100,6 +118,7 @@ class InputState {
     this.mouseDownButtons = 0;
     this.mousePressedThisTick = 0;
     this.mouseReleasedThisTick = 0;
+    this.wheelAccum = 0;
   };
 
   attach(canvas: HTMLCanvasElement): void {
@@ -113,6 +132,8 @@ class InputState {
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('contextmenu', this.onContextMenu);
+    // `wheel` must not be passive so we can preventDefault while locked.
+    window.addEventListener('wheel', this.onWheel, { passive: false });
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
   }
 
@@ -125,6 +146,7 @@ class InputState {
     window.removeEventListener('mouseup', this.onMouseUp);
     window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('contextmenu', this.onContextMenu);
+    window.removeEventListener('wheel', this.onWheel);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     this._bound = false;
     this._canvas = null;
@@ -166,6 +188,19 @@ class InputState {
 
   wasMouseReleased(button: number): boolean {
     return (this.mouseReleasedThisTick & (1 << button)) !== 0;
+  }
+
+  /** Consume accumulated wheel motion as a signed integer count of "ticks":
+   *  positive when the user scrolled DOWN (deltaY > 0, conventionally
+   *  "next" in lists), negative for scroll UP. Each ~100 units of native
+   *  deltaY is one tick. Any sub-tick remainder is preserved across calls
+   *  so slow trackpad scrolls still register eventually. */
+  consumeWheelTicks(): number {
+    const STEP = 100;
+    if (this.wheelAccum > -STEP && this.wheelAccum < STEP) return 0;
+    const ticks = (this.wheelAccum > 0 ? Math.floor(this.wheelAccum / STEP) : Math.ceil(this.wheelAccum / STEP));
+    this.wheelAccum -= ticks * STEP;
+    return ticks;
   }
 
   /** Consume mouse delta accumulated since the last consumption. */
