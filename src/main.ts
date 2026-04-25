@@ -213,8 +213,8 @@ function bootstrap(): void {
   events.on('match:bombPlanted', () => {
     const bombInfo = mirrorBomb(match.round?.bomb);
     if (bombInfo.site && bombInfo.pos) {
-      reactToBombPlanted(tBoard, bots, bombInfo, world, time.simMs);
-      reactToBombPlanted(ctBoard, bots, bombInfo, world, time.simMs);
+      reactToBombPlanted(tBoard, bots, bombInfo, world, navGrid, time.simMs);
+      reactToBombPlanted(ctBoard, bots, bombInfo, world, navGrid, time.simMs);
     }
   });
 
@@ -260,10 +260,13 @@ function bootstrap(): void {
       else ctBots.push(bot);
     }
     // Strategists pick a plan, assign roles, write objectives. Bots then
-    // pull their objective from their team's blackboard.
+    // pull their objective from their team's blackboard. Pass navGrid so
+    // each plan slot's callout centroid gets snapped to a walkable cell
+    // before storing — otherwise a centroid in a wall column strands the
+    // assigned bot at spawn.
     const round = match.round.number;
-    planRoundStart(tBoard, tBots, match.players, world, round, time.simMs);
-    planRoundStart(ctBoard, ctBots, match.players, world, round, time.simMs);
+    planRoundStart(tBoard, tBots, match.players, world, navGrid, round, time.simMs);
+    planRoundStart(ctBoard, ctBots, match.players, world, navGrid, round, time.simMs);
     applyBlackboardObjectives(tBoard, tBots);
     applyBlackboardObjectives(ctBoard, ctBots);
   };

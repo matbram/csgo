@@ -10,10 +10,12 @@
  *  is consuming. */
 
 import type { World } from '../map/world';
+import { polygonCentroid } from '../map/world';
 import type { Bot } from '../entities/bot';
 import type { MatchPlayerSlot } from '../match/match';
 import type { TeamBlackboard, BombInfo } from './blackboard';
 import { recordEvent } from './blackboard';
+import type { NavGrid } from '../nav/grid';
 import { PLANS, plansForSide, type EcoTier, type PlanDef, type Side, type StrategyId } from './plans';
 
 const FULL_BUY_PER_PLAYER = 4500;
@@ -50,12 +52,20 @@ function pickPostPlantPlan(side: Side, site: 'A' | 'B'): PlanDef {
 /** Drop in a plan: write strategy, roles, and objectives into the
  *  blackboard. Bot order is preserved so role index stays stable across
  *  consecutive replans (avoids a bot that was the entry suddenly becoming
- *  the lurker mid-round). */
+ *  the lurker mid-round).
+ *
+ *  Each slot's callout centroid is snapped to the nearest walkable cell
+ *  on the nav grid so a callout with a tight or partially blocked
+ *  centroid (PIT, MID_DOORS, B_TUNNELS_*) doesn't strand the assigned
+ *  bot at spawn. If the snap fails entirely, we fall back to the
+ *  bombsite centroid — never a polygon corner, which is often itself
+ *  in a wall. */
 function applyPlan(
   bb: TeamBlackboard,
   plan: PlanDef,
   bots: ReadonlyArray<Bot>,
   world: World,
+  navGrid: NavGrid,
   nowMs: number,
 ): void {
   bb.strategy = plan.id;
@@ -68,13 +78,35 @@ function applyPlan(
   // for consistent role assignment across replans.
   teamBots.sort((a, b) => a.id.localeCompare(b.id));
 
+  // Pre-compute a global fallback: bombsite A centroid. Bombsites are
+  // large, flat polygons authored to be reachable, so they're a good
+  // last-resort target when a callout simply can't be snapped.
+  const fallback = world.bombSites[0]
+    ? polygonCentroid(world.bombSites[0].polygon)
+    : ([0, 0] as const);
+
   for (let i = 0; i < teamBots.length; i++) {
     const bot = teamBots[i]!;
     const slot = plan.slots[Math.min(i, plan.slots.length - 1)]!;
     const where = world.callouts.get(slot.callout)?.centroid;
-    const fallback = world.bombSites[0]?.polygon[0] ?? [0, 0];
-    const x = where ? where[0] : fallback[0];
-    const z = where ? where[1] : fallback[1];
+    let x = where ? where[0] : fallback[0];
+    let z = where ? where[1] : fallback[1];
+
+    // Snap to walkable. If even the larger search fails, fall back to
+    // the bombsite centroid — and snap THAT too, to be safe.
+    const snapped = navGrid.nearestWalkable(x, z);
+    if (snapped) {
+      const c = navGrid.cellCenterWorld(snapped.i, snapped.j);
+      x = c.x; z = c.z;
+    } else {
+      const fb = navGrid.nearestWalkable(fallback[0], fallback[1]);
+      if (fb) {
+        const c = navGrid.cellCenterWorld(fb.i, fb.j);
+        x = c.x; z = c.z;
+      }
+      // eslint-disable-next-line no-console
+      console.warn(`[strategist] callout ${slot.callout} did not snap to navmesh; using bombsite fallback`);
+    }
 
     let facingYaw: number | undefined;
     if (slot.facingCallout) {
@@ -116,12 +148,13 @@ export function planRoundStart(
   bots: ReadonlyArray<Bot>,
   players: ReadonlyMap<string, MatchPlayerSlot>,
   world: World,
+  navGrid: NavGrid,
   roundNumber: number,
   nowMs: number,
 ): void {
   const eco = teamEcoTier(bb.side, players);
   const plan = pickPreplanPlan(bb.side, eco, roundNumber);
-  applyPlan(bb, plan, bots, world, nowMs);
+  applyPlan(bb, plan, bots, world, navGrid, nowMs);
 }
 
 /** React to a bomb plant. T strategist installs a defensive plan; CT
@@ -131,11 +164,12 @@ export function reactToBombPlanted(
   bots: ReadonlyArray<Bot>,
   bomb: BombInfo,
   world: World,
+  navGrid: NavGrid,
   nowMs: number,
 ): void {
   if (!bomb.site || !bomb.pos) return;
   const plan = pickPostPlantPlan(bb.side, bomb.site);
-  applyPlan(bb, plan, bots, world, nowMs);
+  applyPlan(bb, plan, bots, world, navGrid, nowMs);
   recordEvent(bb, {
     type: 'bombPlanted',
     site: bomb.site,

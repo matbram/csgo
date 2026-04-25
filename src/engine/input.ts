@@ -154,7 +154,14 @@ class InputState {
 
   requestPointerLock(): void {
     if (!this._canvas) return;
-    void this._canvas.requestPointerLock();
+    // Some browsers throttle requests that fire too soon after an Esc
+    // release ("user has exited the lock"). The promise rejection is
+    // benign — the user can click the canvas to re-acquire — so we
+    // swallow it instead of leaving an unhandled-rejection warning.
+    const p = this._canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+    if (p && typeof (p as Promise<void>).then === 'function') {
+      (p as Promise<void>).catch(() => {});
+    }
   }
 
   releasePointerLock(): void {

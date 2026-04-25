@@ -134,8 +134,14 @@ export class NavGrid {
   }
 
   /** Find the nearest walkable cell to (x, z) within `maxRadiusCells` rings.
-   *  Used to snap a possibly-blocked start/goal onto the navmesh. */
-  nearestWalkable(x: number, z: number, maxRadiusCells = 6): { i: number; j: number } | null {
+   *  Used to snap a possibly-blocked start/goal onto the navmesh.
+   *
+   *  The default radius is generous (24 cells ≈ 14 m at the default 0.6 m
+   *  cell size) because callout centroids often land in tight or partial
+   *  cells where the agent capsule doesn't quite fit; we'd rather pay a
+   *  few extra ring scans than have a bot huddle at spawn because their
+   *  objective wasn't reachable. */
+  nearestWalkable(x: number, z: number, maxRadiusCells = 24): { i: number; j: number } | null {
     const home = this.worldToCell(x, z);
     if (!home) return null;
     if (this.isWalkable(home.i, home.j)) return home;
