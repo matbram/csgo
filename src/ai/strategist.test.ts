@@ -52,19 +52,23 @@ describe('teamEcoTier', () => {
 });
 
 describe('pickPreplanPlan', () => {
-  it('eco tier always returns an eco plan', () => {
-    const plan = pickPreplanPlan('T', 'eco', 1);
-    expect(plan.ecoTier).toBe('eco');
-    expect(plan.side).toBe('T');
-    expect(plan.phase).toBe('pre_plant');
+  it('always returns a normal pre-plant plan, even on eco', () => {
+    // Eco plans in the library currently stack at spawn, so the picker
+    // doesn't auto-select them — buy logic handles the "save money"
+    // side of eco rounds on its own.
+    for (const tier of ['eco', 'normal', 'force'] as const) {
+      const plan = pickPreplanPlan('T', tier, 3);
+      expect(plan.ecoTier).toBe('normal');
+      expect(plan.side).toBe('T');
+      expect(plan.phase).toBe('pre_plant');
+    }
   });
 
-  it('normal tier never returns an eco plan when normals exist', () => {
+  it('never picks an eco plan even when explicitly asked for eco', () => {
     for (let r = 1; r <= 30; r++) {
-      const plan = pickPreplanPlan('CT', 'normal', r);
+      const plan = pickPreplanPlan('CT', 'eco', r);
       expect(plan.ecoTier).toBe('normal');
       expect(plan.side).toBe('CT');
-      expect(plan.phase).toBe('pre_plant');
     }
   });
 

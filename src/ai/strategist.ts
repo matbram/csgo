@@ -22,21 +22,26 @@ const FULL_BUY_PER_PLAYER = 4500;
 const FORCE_BUY_PER_PLAYER = 2500;
 
 /** Decide a plan for the team based on team mean money + a deterministic
- *  per-round dice roll. */
+ *  per-round dice roll. We always pick from the `normal` pool because
+ *  the eco plans in the library deliberately stack bots near spawn, and
+ *  the buy logic already enforces the "save your money" half of an eco
+ *  round on its own. Picking an eco plan here would double-up — bots
+ *  would have pistols AND huddle at spawn, which makes for the worst
+ *  pistol round in history. The `EcoTier` argument is preserved on the
+ *  signature so the picker can re-introduce eco plans later (e.g. when
+ *  someone authors distributed eco plans that don't all stack on
+ *  T_SPAWN). */
 function pickPreplanPlan(
   side: Side,
-  ecoTier: EcoTier,
+  _ecoTier: EcoTier,
   roundNumber: number,
 ): PlanDef {
   const eligible = plansForSide(side).filter(p =>
-    p.phase === 'pre_plant' && (p.ecoTier === ecoTier || (ecoTier !== 'eco' && p.ecoTier === 'normal'))
+    p.phase === 'pre_plant' && p.ecoTier === 'normal'
   );
   if (eligible.length === 0) {
-    // Eco fall-through: even on a force round, an eco plan beats nothing.
-    const eco = plansForSide(side).find(p => p.phase === 'pre_plant' && p.ecoTier === 'eco');
-    return eco ?? plansForSide(side)[0]!;
+    return plansForSide(side)[0]!;
   }
-  // Deterministic round-seeded rotation so consecutive rounds vary.
   const idx = lcgPick(roundNumber * 17 + (side === 'T' ? 5 : 11), eligible.length);
   return eligible[idx]!;
 }

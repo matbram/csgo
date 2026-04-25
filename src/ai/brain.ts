@@ -206,14 +206,18 @@ export class Brain {
     // ---- Save: outnumbered + low HP, no critical task pending. T bots
     // never save while they could plant; CT bots never save while a
     // bomb is planted — both situations trump survival economics.
+    //
+    // We deliberately do NOT trigger Save based on the strategy being
+    // an eco_save plan: those plans already place bots in passive
+    // positions, and re-routing them all to spawn on top of that just
+    // produces a "huddle at spawn" round.
     const outnumbered = ctx.enemiesAlive >= ctx.teammatesAlive + 2;
     const wounded = bot.character.hp <= SAVE_LOW_HP;
-    const ecoSavePlan = ctx.blackboard?.strategy === 't_eco_save' || ctx.blackboard?.strategy === 'ct_eco_save';
     const tCanPlant = bot.character.team === 'T' && bot.character.inventory?.c4 != null;
     const ctMustDefuse = bot.character.team === 'CT' && bomb && bomb.phase === 'planted';
     if (
       !tCanPlant && !ctMustDefuse &&
-      ((outnumbered && wounded) || ecoSavePlan)
+      outnumbered && wounded
     ) {
       u.save = 70;     // beats moveto/idle/reload but loses to engage on visible
     }
