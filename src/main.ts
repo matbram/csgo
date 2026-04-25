@@ -7,7 +7,7 @@
  *    4.  Local controller + camera + post-FX
  *    5.  Local player wrapper + view model
  *    6.  Combat + audio + visuals
- *    7.  Roster (4 T dummies + 5 CT dummies + local)
+ *    7.  Roster (4 T bots + 5 CT bots + local)
  *    8.  Match state, HUDs (round, combat, scoreboard, buy menu)
  *    9.  Input
  *   10.  Loop
@@ -38,7 +38,10 @@ import { installCombatVisuals } from './combat/visuals';
 import { installAudio, ensureAudioContext, setListenerPose, playSound } from './audio/audio';
 import { CombatHud } from './hud/combatHud';
 import { ScopeHud } from './hud/scopeHud';
-import { createDummy, syncDummy, type Dummy } from './entities/dummy';
+import { createBot, snapBotToCharacterPose, setBotObjective, stepBot, syncBotMesh, type Bot } from './entities/bot';
+import { NavGrid } from './nav/grid';
+import { PathService } from './nav/pathService';
+import { pickTeamObjectives } from './ai/objective';
 import type { Character } from './entities/character';
 import { pointInPolygon2D } from './map/world';
 import { makeMatch, beginRound, endRound, applyHalftime, stepMatch, type MatchState } from './match/match';
@@ -98,24 +101,26 @@ function bootstrap(): void {
   installAudio();
   installCombatVisuals();
 
-  // 7) Roster: 4 more T dummies (teammates), 5 CT dummies (enemies).
-  const dummies: Dummy[] = [];
-  let dummyIdx = 0;
+  // 6.5) Nav grid + path service. Built once at boot — Dust 2 is static
+  // and the grid is small enough to bake synchronously (<200 ms).
+  const navGrid = NavGrid.build(world, query);
+  const pathService = new PathService(navGrid, { maxRequestsPerFrame: 2, cacheSize: 32 });
+
+  // 7) Roster: 4 T bots (teammates of local), 5 CT bots (enemies).
+  const bots: Bot[] = [];
   for (let i = 0; i < 4; i++) {
     const sp = tSpawns[(i + 1) % Math.max(1, tSpawns.length)] ?? startSpawn!;
-    const d = createDummy('T', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw);
-    d.character.id = `t-bot-${++dummyIdx}`;
-    dummies.push(d);
-    characters.push(d.character);
+    const bot = createBot('T', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, { id: `t-bot-${i + 1}` });
+    bots.push(bot);
+    characters.push(bot.character);
   }
   const ctSpawns = world.spawnsForTeam('CT');
   for (let i = 0; i < 5; i++) {
     const sp = ctSpawns[i % Math.max(1, ctSpawns.length)] ?? ctSpawns[0]!;
     if (!sp) throw new Error('No CT spawns authored');
-    const d = createDummy('CT', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw);
-    d.character.id = `ct-bot-${i + 1}`;
-    dummies.push(d);
-    characters.push(d.character);
+    const bot = createBot('CT', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, { id: `ct-bot-${i + 1}` });
+    bots.push(bot);
+    characters.push(bot.character);
   }
 
   // 8) Match state
@@ -172,6 +177,31 @@ function bootstrap(): void {
   canvas.addEventListener('click', () => ensureAudioContext());
   input.attach(canvas);
 
+  // After each roster reset we re-snap every bot to its new spawn pose
+  // (the controller state doesn't follow the Character record on its own)
+  // and hand out fresh objectives. Path requests are deferred to the
+  // first sim tick so the path service's per-frame budget applies.
+  const refreshBotsForNewRound = (): void => {
+    if (!match.round) return;
+    const tBots: Bot[] = [];
+    const ctBots: Bot[] = [];
+    for (const bot of bots) {
+      snapBotToCharacterPose(bot);
+      if (bot.character.team === 'T') tBots.push(bot);
+      else ctBots.push(bot);
+    }
+    const tObj = pickTeamObjectives('T', tBots.map(b => b.id), world, match.round.number);
+    const ctObj = pickTeamObjectives('CT', ctBots.map(b => b.id), world, match.round.number);
+    for (let i = 0; i < tBots.length; i++) {
+      const o = tObj[i]!;
+      setBotObjective(tBots[i]!, o.x, o.z);
+    }
+    for (let i = 0; i < ctBots.length; i++) {
+      const o = ctObj[i]!;
+      setBotObjective(ctBots[i]!, o.x, o.z);
+    }
+  };
+
   // First round. Reset everyone first so beginRound's carrier pick sees
   // alive characters; then begin the round; then assign the C4 to the carrier.
   resetRoster(characters, localPlayer, world, match, /* localSurvived */ true);
@@ -179,12 +209,14 @@ function bootstrap(): void {
   if (match.round?.bomb?.carrierId) {
     assignBomb(characters, match.round.bomb.carrierId);
   }
+  refreshBotsForNewRound();
   events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
   lastRoundNumber = match.round!.number;
 
   // ---- Sim systems ----
   loop.registerSim((dtMs) => {
     const nowMs = time.simMs + dtMs; // step time updates AFTER sim systems run, so use computed
+    pathService.beginFrame();
     fps.applyMouseLook();
 
     if (input.wasPressed('F3')) debugHud.toggle();
@@ -356,6 +388,15 @@ function bootstrap(): void {
       viewModel.setReloading(activeInst.state === 'reloading');
     }
 
+    // Step the bots. They follow A* paths to their objectives — no
+    // perception or combat yet (Pass 2). Movement is gated on the round
+    // being live; during freeze they stand at spawn.
+    if (match.round?.phase === 'live') {
+      for (const bot of bots) {
+        stepBot(bot, dtMs, time.simMs, pathService);
+      }
+    }
+
     // Plant / defuse intent — read from the same E key.
     const eHeld = input.isDown('KeyE') && !buyMenu.isOpen() && localPlayer.character.alive;
     const planterIntent = (() => {
@@ -420,6 +461,7 @@ function bootstrap(): void {
         if (match.round?.bomb?.carrierId) {
           assignBomb(characters, match.round.bomb.carrierId);
         }
+        refreshBotsForNewRound();
         if (match.round!.number !== lastRoundNumber) {
           events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
           lastRoundNumber = match.round!.number;
@@ -446,6 +488,7 @@ function bootstrap(): void {
       if (match.round?.bomb?.carrierId) {
         assignBomb(characters, match.round.bomb.carrierId);
       }
+      refreshBotsForNewRound();
       if (localPlayer.character.inventory) {
         viewModel.setWeapon(activeInstance(localPlayer.character.inventory));
       }
@@ -483,7 +526,7 @@ function bootstrap(): void {
     // requiring an explicit setWeapon call from every code path.
     viewModel.setWeapon(renderInst);
     viewModel.update(controller.state.speed, renderDtMs);
-    for (const d of dummies) syncDummy(d);
+    for (const b of bots) syncBotMesh(b);
     c4Entity.update(match.round?.bomb ?? null, time.simMs);
 
     const cam = fps.camera;
@@ -517,7 +560,7 @@ function bootstrap(): void {
   // Quiet a couple of unused-ish references for the linter.
   void engine; void scene; void makeInstance; void playSound;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, dummies, characters, get match() { return match; } };
+  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, bots, navGrid, pathService, characters, get match() { return match; } };
 }
 
 function currentInstance(p: LocalPlayer): WeaponInstance | null {

@@ -3,7 +3,7 @@
  *
  *  Each entity is a Character record. The local player's character is
  *  shared with the kinematic CharacterController. Bot/dummy characters
- *  drive a humanoid mesh through `syncDummy()`.
+ *  drive a humanoid mesh through the bot's render sync.
  *
  *  At round start we:
  *    1. Reset HP=100, alive=true, helmet/armor/kit per their loadout.
@@ -12,8 +12,9 @@
  *       gear (carry-over rule: alive players keep their gear; dead
  *       players reset to default).
  *
- *  M3 simplification: dummy bots can't move, so they always reset to
- *  default. Only the local player benefits from carry-over. */
+ *  In M4 bots reset to the default loadout each round just like the local
+ *  player would on death. Carry-over for surviving bots will follow when
+ *  the strategist decides between full-buy and save in M5. */
 
 import type { Character } from '../entities/character';
 import type { World, Spawn } from '../map/world';
