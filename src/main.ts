@@ -543,6 +543,13 @@ function bootstrap(): void {
       // popped; if no grenades remain we fall back to the player's
       // primary or secondary so the next click does the expected thing.
       if (activeInst.def.slot === 'grenade') {
+        // Grenades don't go through firing.step (which advances the
+        // 'deploying' → 'ready' transition for guns). Advance it
+        // inline so the throw can fire once the deploy timer elapses.
+        if (activeInst.state === 'deploying' && time.simMs >= activeInst.stateUntilMs) {
+          activeInst.state = 'ready';
+          activeInst.stateUntilMs = 0;
+        }
         const lmb = input.wasMousePressed(0);
         const rmb = input.wasMousePressed(2);
         if ((lmb || rmb) && activeInst.state === 'ready') {

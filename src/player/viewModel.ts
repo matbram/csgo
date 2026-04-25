@@ -406,6 +406,19 @@ function buildViewModel(parent: Node, category: WeaponCategory): ViewModelHandle
     // Hilt
     mkBox('vm-hilt', { width: 0.025, height: 0.07, depth: 0.10 }, [0, -0.04, -0.05], m.wood);
     muzzle.position.set(0, 0, 0.20);
+  } else if (category === 'grenade') {
+    // Spherical body held forward in the throwing hand. A short pin
+    // tab on top makes the silhouette read as a grenade rather than a
+    // generic ball. Muzzle is in front of the hand so the throw origin
+    // is sensible.
+    const body = MeshBuilder.CreateSphere('vm-grenade-body', { diameter: 0.10, segments: 10 }, scene);
+    body.position.set(0, -0.02, 0.10);
+    body.material = m.metal;
+    body.parent = root;
+    body.isPickable = false;
+    parts.push(body);
+    mkBox('vm-grenade-pin', { width: 0.015, height: 0.025, depth: 0.015 }, [0, 0.04, 0.10], m.accent);
+    muzzle.position.set(0, -0.02, 0.16);
   } else {
     // Default: simple box (e.g., C4 carry, smg, lmg)
     mkBox('vm-block', { width: 0.10, height: 0.10, depth: 0.20 }, [0, 0, 0.10], m.polymer);
