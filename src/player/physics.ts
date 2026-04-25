@@ -169,10 +169,12 @@ export class WorldQuery {
    *  block crouch-uncrouch when there's a low ceiling. */
   capsuleClear(x: number, yBottom: number, z: number, radius: number, height: number): boolean {
     const yTop = yBottom + height;
+    const eps = 0.001;
     for (const b of this.world.boxes) {
       if (yTop < b.aabbMinY) continue;
-      if (yBottom > b.aabbMaxY) continue;
-      // For ceilings, walkable doesn't matter — if our head is inside the box, blocked.
+      // Skip boxes whose top is at or below our feet — they can't be a ceiling.
+      // This handles the floor we're standing on (where yBottom == aabbMaxY).
+      if (yBottom >= b.aabbMaxY - eps) continue;
       if (x + radius < b.aabbMinX) continue;
       if (x - radius > b.aabbMaxX) continue;
       if (z + radius < b.aabbMinZ) continue;
