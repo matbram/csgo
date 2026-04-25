@@ -4,6 +4,7 @@
 
 import { events } from '../engine/events';
 import { input } from '../engine/input';
+import { settings } from '../engine/settings';
 
 export class StartOverlay {
   private readonly root: HTMLElement;
@@ -58,4 +59,11 @@ export function ensureCrosshair(): void {
   const cx = document.createElement('div');
   cx.className = 'crosshair';
   host.appendChild(cx);
+  // Sync color/scale from settings to CSS custom properties on the
+  // host. The crosshair stylesheet reads these vars, so a live setting
+  // change applies without rebuilding the DOM.
+  settings.subscribe((s) => {
+    host.style.setProperty('--crosshair-color', s.crosshairColor);
+    host.style.setProperty('--crosshair-scale', String(s.crosshairScale));
+  });
 }

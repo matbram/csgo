@@ -41,13 +41,20 @@ html, body {
   font-feature-settings: "tnum" 1;
 }
 
-/* ---------- Crosshair ---------- */
+/* ---------- Crosshair ----------
+ * Color and scale come from CSS variables on #hud-root, set by the
+ * settings store. Defaults match the pre-settings build.
+ */
+#hud-root {
+  --crosshair-color: #fff4dc;
+  --crosshair-scale: 1;
+}
 .crosshair {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 18px;
-  height: 18px;
+  width: calc(18px * var(--crosshair-scale));
+  height: calc(18px * var(--crosshair-scale));
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
@@ -55,8 +62,9 @@ html, body {
 .crosshair::after {
   content: "";
   position: absolute;
-  background: rgba(255, 244, 220, 0.85);
+  background: var(--crosshair-color);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
+  opacity: 0.92;
 }
 .crosshair::before {
   left: 50%; top: 0; bottom: 0;
@@ -67,6 +75,147 @@ html, body {
   height: 2px; transform: translateY(-50%);
 }
 .crosshair.hidden { display: none; }
+
+/* ---------- Settings menu ---------- */
+.settings-menu {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+  z-index: 60;
+}
+.settings-menu.hidden { display: none; }
+.settings-card {
+  width: min(520px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  background: #14110c;
+  border: 1px solid rgba(255, 196, 96, 0.18);
+  border-radius: 6px;
+  padding: 18px 22px 16px;
+  color: #f4ead7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+}
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 196, 96, 0.15);
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+.settings-title {
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  color: #ffd089;
+}
+.settings-close {
+  background: transparent;
+  border: 1px solid rgba(255, 196, 96, 0.25);
+  color: #f4ead7;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.settings-close:hover { background: rgba(255, 196, 96, 0.12); }
+.settings-section { margin-bottom: 14px; }
+.settings-section-title {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #c9b88a;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.settings-section-note {
+  font-size: 11px;
+  color: rgba(244, 234, 215, 0.55);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+.settings-row-label {
+  flex: 0 0 120px;
+  color: #f4ead7;
+}
+.settings-row input[type="range"] {
+  flex: 1;
+  accent-color: #ffd089;
+}
+.settings-row input[type="color"] {
+  width: 36px;
+  height: 24px;
+  background: transparent;
+  border: 1px solid rgba(255, 196, 96, 0.25);
+  cursor: pointer;
+}
+.settings-row-value {
+  flex: 0 0 64px;
+  text-align: right;
+  color: #ffd089;
+  font-variant-numeric: tabular-nums;
+}
+.settings-row-radio { align-items: flex-start; }
+.settings-segment {
+  display: flex;
+  flex: 1;
+  border: 1px solid rgba(255, 196, 96, 0.22);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.settings-segment button {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #f4ead7;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  border-right: 1px solid rgba(255, 196, 96, 0.18);
+}
+.settings-segment button:last-child { border-right: none; }
+.settings-segment button:hover { background: rgba(255, 196, 96, 0.10); }
+.settings-segment button.selected {
+  background: rgba(255, 196, 96, 0.25);
+  color: #1a1410;
+}
+.settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid rgba(255, 196, 96, 0.15);
+  padding-top: 10px;
+  margin-top: 6px;
+}
+.settings-reset {
+  background: transparent;
+  border: 1px solid rgba(255, 196, 96, 0.25);
+  color: #f4ead7;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-reset:hover { background: rgba(255, 196, 96, 0.10); }
+.settings-footer-hint {
+  color: rgba(244, 234, 215, 0.45);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
 
 /* ---------- Spectator banner ---------- */
 .spectator-banner {

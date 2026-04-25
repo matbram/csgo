@@ -17,6 +17,7 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { createEngine, getEngine, getScene } from './engine/scene';
 import { createLighting } from './engine/lighting';
 import { createPostFx } from './engine/postfx';
+import { adaptiveQuality } from './engine/adaptiveQuality';
 import { input } from './engine/input';
 import { loop } from './engine/loop';
 import { time } from './engine/time';
@@ -27,6 +28,8 @@ import { CharacterController, DEFAULT_TUNABLES } from './player/controller';
 import { WorldQuery } from './player/physics';
 import { FpsCamera } from './player/fpsCamera';
 import { StartOverlay, ensureCrosshair } from './hud/overlay';
+import { SettingsHud } from './hud/settingsHud';
+import { settings } from './engine/settings';
 import { DebugHud } from './hud/debugHud';
 import { LocalPlayer } from './player/localPlayer';
 import { ViewModel } from './player/viewModel';
@@ -97,6 +100,7 @@ function bootstrap(): void {
   controller.snapToGround();
   const fps = new FpsCamera(controller);
   createPostFx(fps.camera);
+  adaptiveQuality.start();
 
   // 5) Local player + view model
   const localPlayer = new LocalPlayer(controller, 'T');
@@ -127,7 +131,7 @@ function bootstrap(): void {
     const bot = createBot('T', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, {
       id: `t-bot-${i + 1}`,
       teamIndex: i,
-      difficulty: 'medium',
+      difficulty: settings.get().difficulty,
     });
     bots.push(bot);
     characters.push(bot.character);
@@ -139,7 +143,7 @@ function bootstrap(): void {
     const bot = createBot('CT', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, {
       id: `ct-bot-${i + 1}`,
       teamIndex: i,
-      difficulty: 'medium',
+      difficulty: settings.get().difficulty,
     });
     bots.push(bot);
     characters.push(bot.character);
@@ -178,6 +182,7 @@ function bootstrap(): void {
 
   // HUDs
   ensureCrosshair();
+  const settingsHud = new SettingsHud(hudRoot);
   const debugHud = new DebugHud(controller, world);
   const combatHud = new CombatHud();
   const scopeHud = new ScopeHud();
@@ -453,13 +458,22 @@ function bootstrap(): void {
           input.releasePointerLock();
         }
       }
-      if (input.wasPressed('Escape') && buyMenu.isOpen()) {
-        buyMenu.close();
-        input.requestPointerLock();
-      }
       // Refresh content / auto-close on lost eligibility.
       if (buyMenu.isOpen()) {
         buyMenu.refresh(buyMenuCtx(slot, inBuyZone, buyPhase));
+      }
+    }
+
+    // Esc opens (or closes) the settings menu. The buy menu wins
+    // priority — pressing Esc with the buy menu open just closes it.
+    // The browser releases pointer lock on Esc; consumeEscape() latches
+    // the edge so a delayed sim tick still sees it.
+    if (input.consumeEscape()) {
+      if (buyMenu.isOpen()) {
+        buyMenu.close();
+        input.requestPointerLock();
+      } else {
+        settingsHud.toggle();
       }
     }
 
@@ -805,6 +819,7 @@ function bootstrap(): void {
 
   // ---- Render systems ----
   loop.registerRender((renderDtMs) => {
+    adaptiveQuality.step(renderDtMs);
     // Drive scope-related state BEFORE syncRender so the FOV lerp uses the
     // latest target this frame.
     const renderInst = currentInstance(localPlayer);

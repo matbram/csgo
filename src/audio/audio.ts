@@ -8,6 +8,7 @@
  *  This keeps fire-time cheap (just buffer source). */
 
 import { events } from '../engine/events';
+import { settings } from '../engine/settings';
 import type { WeaponId } from '../weapons/definitions';
 
 let ctx: AudioContext | null = null;
@@ -30,10 +31,15 @@ export function ensureAudioContext(): AudioContext | null {
     return null;
   }
   masterGain = ctx.createGain();
-  masterGain.gain.value = 0.55;
+  masterGain.gain.value = settings.get().masterVolume;
   masterGain.connect(ctx.destination);
   // Pre-generate all gunshot sounds once the context exists.
   generateAllSounds();
+  // Subscribe AFTER first resolve so we don't fire setMasterVolume on a
+  // null gain node. Fires once with current state too.
+  settings.subscribe((s) => {
+    if (masterGain) masterGain.gain.value = s.masterVolume;
+  });
   return ctx;
 }
 

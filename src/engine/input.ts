@@ -4,6 +4,7 @@
  *  and reset by `commitTick()`. */
 
 import { events } from './events';
+import { settings } from './settings';
 
 export type KeyCode = string; // KeyboardEvent.code, e.g. 'KeyW', 'Space'
 
@@ -31,12 +32,24 @@ class InputState {
   private _bound = false;
   private _canvas: HTMLCanvasElement | null = null;
 
-  /** Mouse sensitivity in radians per pixel. Tuned to feel like CS:GO ~2.0. */
+  /** Mouse sensitivity in radians per pixel. Tuned to feel like CS:GO ~2.0.
+   *  Driven by the settings store after construction. */
   sensitivity = 0.0022;
 
+  constructor() {
+    settings.subscribe((s) => { this.sensitivity = s.sensitivity; });
+  }
+
   // Bound handlers kept on the instance so we can detach.
+  /** Latched Escape edge. The browser releases pointer lock on Esc and
+   *  our lock-change handler clears `pressedThisTick`, so a vanilla
+   *  edge query loses the press. This flag is set on Esc keydown and
+   *  consumed independently. */
+  private escapePending = false;
+
   private readonly onKeyDown = (e: KeyboardEvent) => {
     if (e.repeat) return;
+    if (e.code === 'Escape') this.escapePending = true;
     if (!this.down.has(e.code)) {
       this.down.add(e.code);
       this.pressedThisTick.add(e.code);
@@ -216,6 +229,15 @@ class InputState {
     this.mouseDx = 0;
     this.mouseDy = 0;
     return out;
+  }
+
+  /** True once on the tick after the user pressed Esc; cleared by the
+   *  call. Survives a pointer-lock release in the same task — that's
+   *  why this isn't part of `pressedThisTick`. */
+  consumeEscape(): boolean {
+    if (!this.escapePending) return false;
+    this.escapePending = false;
+    return true;
   }
 
   /** Called by the loop after a sim tick consumes inputs. Clears the
