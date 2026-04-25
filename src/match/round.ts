@@ -63,11 +63,15 @@ export function makeRound(number: number, nowMs: number, bombCarrierId: string |
   };
 }
 
-export function isBuyPhase(round: RoundState, nowMs: number): boolean {
+export function isBuyPhase(round: RoundState | null, nowMs: number): boolean {
+  if (!round) return false;
   return round.phase === 'freeze' || (round.phase === 'live' && nowMs < round.buyEndMs);
 }
 
-export function isMovementLocked(round: RoundState): boolean {
+export function isMovementLocked(round: RoundState | null): boolean {
+  // No active round → match has ended (or has yet to begin). Lock movement
+  // so the local player can't sprint around between matches.
+  if (!round) return true;
   return round.phase === 'freeze' || round.phase === 'end';
 }
 

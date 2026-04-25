@@ -41,6 +41,9 @@ import { CombatHud } from './hud/combatHud';
 import { ScopeHud } from './hud/scopeHud';
 import { AiDebugHud } from './hud/aiDebug';
 import { FlashOverlay } from './hud/flashOverlay';
+import { SpectatorHud } from './hud/spectatorHud';
+import { MatchEndHud } from './hud/matchEndHud';
+import { Spectator } from './player/spectator';
 import { GrenadeSystem } from './grenades/system';
 import { installGrenadeVisuals } from './grenades/visuals';
 import { createBot, snapBotToCharacterPose, setBotObjective, stepBot, syncBotMesh, type Bot } from './entities/bot';
@@ -180,6 +183,9 @@ function bootstrap(): void {
   const scopeHud = new ScopeHud();
   const aiDebugHud = new AiDebugHud();
   const flashOverlay = new FlashOverlay();
+  const spectatorHud = new SpectatorHud();
+  const matchEndHud = new MatchEndHud();
+  const spectator = new Spectator();
   const roundHud = new RoundHud(hudRoot);
   const scoreboard = new Scoreboard(hudRoot);
   const c4Entity = new C4Entity();
@@ -383,8 +389,10 @@ function bootstrap(): void {
     assignBomb(characters, match.round.bomb.carrierId);
   }
   refreshBotsForNewRound();
-  events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
-  lastRoundNumber = match.round!.number;
+  if (match.round) {
+    events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
+    lastRoundNumber = match.round.number;
+  }
 
   // ---- Sim systems ----
   loop.registerSim((dtMs) => {
@@ -401,7 +409,7 @@ function bootstrap(): void {
 
     // Movement input (locked during freeze/end).
     let forward = 0, strafe = 0;
-    if (!isMovementLocked(match.round!) && input.pointerLocked && !buyMenu.isOpen()) {
+    if (!isMovementLocked(match.round) && input.pointerLocked && !buyMenu.isOpen()) {
       if (input.isDown('KeyW')) forward += 1;
       if (input.isDown('KeyS')) forward -= 1;
       if (input.isDown('KeyD')) strafe += 1;
@@ -418,7 +426,7 @@ function bootstrap(): void {
     const wishX = fX * forward + rX * strafe;
     const wishZ = fZ * forward + rZ * strafe;
 
-    const movementLocked = isMovementLocked(match.round!);
+    const movementLocked = isMovementLocked(match.round);
     controller.step(dtMs, {
       wishX: movementLocked ? 0 : wishX,
       wishZ: movementLocked ? 0 : wishZ,
@@ -433,7 +441,7 @@ function bootstrap(): void {
     const slot = match.players.get('local');
     if (slot) {
       const inBuyZone = isInBuyZoneForLocal(localPlayer, match, world);
-      const buyPhase = isBuyPhase(match.round!, time.simMs);
+      const buyPhase = isBuyPhase(match.round, time.simMs);
       const allowBuy = inBuyZone && buyPhase && localPlayer.character.alive;
 
       if (input.wasPressed('KeyB')) {
@@ -500,6 +508,13 @@ function bootstrap(): void {
     }
     // If the player died this tick (or any time their inventory is in a
     // dead state), drop scope so the camera/HUD can return to default.
+    // Also intercept LMB/RMB while dead to drive spectator cycling — we
+    // run this BEFORE the firing block, which gates on `alive`, so the
+    // same edge isn't double-consumed as a misfire.
+    if (!localPlayer.character.alive && input.pointerLocked && !buyMenu.isOpen()) {
+      if (input.wasMousePressed(0)) spectator.next();
+      if (input.wasMousePressed(2)) spectator.prev();
+    }
     if (!localPlayer.character.alive && inst && inst.scopeLevel > 0) {
       inst.scopeLevel = 0;
     }
@@ -739,9 +754,9 @@ function bootstrap(): void {
           assignBomb(characters, match.round.bomb.carrierId);
         }
         refreshBotsForNewRound();
-        if (match.round!.number !== lastRoundNumber) {
-          events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
-          lastRoundNumber = match.round!.number;
+        if (match.round && match.round.number !== lastRoundNumber) {
+          events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
+          lastRoundNumber = match.round.number;
           // Refresh view model in case the player got the C4 or lost their primary.
           if (localPlayer.character.inventory) {
             viewModel.setWeapon(activeInstance(localPlayer.character.inventory));
@@ -771,8 +786,10 @@ function bootstrap(): void {
         viewModel.setWeapon(activeInstance(localPlayer.character.inventory));
       }
       roundEndApplied = false;
-      events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
-      lastRoundNumber = match.round!.number;
+      if (match.round) {
+        events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
+        lastRoundNumber = match.round.number;
+      }
     }
 
     // Match end audio cue.
@@ -795,10 +812,22 @@ function bootstrap(): void {
     } else {
       fps.resetFov();
     }
-    viewModel.setVisible(effectiveScopeLevel === 0);
     scopeHud.setLevel(effectiveScopeLevel);
 
     fps.syncRender();
+    // Spectator override: while the local player is dead, refresh the
+    // candidate roster and snap the camera to a teammate's eye. Hide
+    // the view model so a "ghost knife" doesn't float across the screen
+    // while spectating.
+    const isDead = !localPlayer.character.alive;
+    if (isDead) {
+      spectator.refresh(bots, localPlayer.character.team);
+      spectator.applyToCamera(fps.camera);
+      viewModel.setVisible(false);
+    } else {
+      viewModel.setVisible(effectiveScopeLevel === 0);
+    }
+    spectatorHud.setActive(isDead, spectator.currentTarget()?.id ?? null);
     // Keep the view model in sync with whatever weapon is currently active.
     // This catches purchases (which auto-switch the active slot) without
     // requiring an explicit setWeapon call from every code path.
@@ -821,6 +850,7 @@ function bootstrap(): void {
     aiDebugHud.update(bots, tBoard, ctBoard);
     combatHud.update(localPlayer.character, performance.now());
     flashOverlay.update(localPlayer.character, time.simMs);
+    matchEndHud.update(match);
     roundHud.update(match, characters, time.simMs);
     scoreboard.update(match, characters);
     bombHud.update(localPlayer.character, match.round?.bomb ?? null, world);
