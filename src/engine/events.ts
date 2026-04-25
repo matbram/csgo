@@ -13,6 +13,48 @@ export interface EventMap {
   'input:resize': { width: number; height: number };
   // Debug
   'debug:toggle': { enabled: boolean };
+  // Combat
+  'combat:fire': {
+    shooterId: string;
+    weapon: string;
+    ox: number; oy: number; oz: number;
+    dx: number; dy: number; dz: number;
+    sprayIndex: number;
+    tMs: number;
+  };
+  'combat:bulletImpact': {
+    x: number; y: number; z: number;
+    nx: number; ny: number; nz: number;
+    surface: string;
+    distance: number;
+    tMs: number;
+  };
+  'combat:tracer': {
+    sx: number; sy: number; sz: number;
+    ex: number; ey: number; ez: number;
+    tMs: number;
+  };
+  'combat:hit': {
+    attackerId: string;
+    victimId: string;
+    weapon: string;
+    hitbox: string;
+    damage: number;
+    headshot: boolean;
+    killing: boolean;
+    hitX: number; hitY: number; hitZ: number;
+    distance: number;
+    tMs: number;
+  };
+  'combat:kill': {
+    attackerId: string;
+    victimId: string;
+    weapon: string;
+    headshot: boolean;
+    tMs: number;
+  };
+  'combat:reload': { shooterId: string; weapon: string; tMs: number };
+  'combat:weaponSwitch': { shooterId: string; weapon: string; tMs: number };
 }
 
 type Listener<K extends keyof EventMap> = (payload: EventMap[K]) => void;

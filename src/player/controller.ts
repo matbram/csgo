@@ -25,6 +25,8 @@ export interface ControllerInput {
   jump: boolean;
   walk: boolean;
   crouch: boolean;
+  /** Multiplier on the move speed (1 = base, 0.85 = AK, 0.65 = AWP). */
+  speedScale?: number;
 }
 
 export interface ControllerTunables {
@@ -162,11 +164,12 @@ export class CharacterController {
       wx /= wlen;
       wz /= wlen;
     }
-    const moveSpeed = s.crouching || s.forcedCrouch
+    const baseSpeed = s.crouching || s.forcedCrouch
       ? t.crouchSpeed
       : input.walk
         ? t.walkSpeed
         : t.runSpeed;
+    const moveSpeed = baseSpeed * (input.speedScale ?? 1);
     s.walking = input.walk && !s.crouching && !s.forcedCrouch;
 
     // ----- Friction (ground only) -----

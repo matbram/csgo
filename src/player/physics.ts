@@ -164,6 +164,40 @@ export class WorldQuery {
     return { dx: outDx, dz: outDz, hitNormalX: hitNX, hitNormalZ: hitNZ };
   }
 
+  /** Ray vs the world's OBBs and ramps. Returns the nearest hit within
+   *  `maxT` (in the direction-vector's units), or null. We do NOT hit the
+   *  sky or invisible blockers. The ray should be normalized for `maxT`
+   *  to mean meters. */
+  rayWorld(
+    ox: number, oy: number, oz: number,
+    dx: number, dy: number, dz: number,
+    maxT: number,
+  ): { t: number; surface: BoxCollider['surface'] } | null {
+    let bestT = maxT;
+    let bestSurface: BoxCollider['surface'] = 'sand';
+    let any = false;
+
+    for (const b of this.world.boxes) {
+      const t = rayObb(ox, oy, oz, dx, dy, dz, b, bestT);
+      if (t !== null && t < bestT) {
+        bestT = t;
+        bestSurface = b.surface;
+        any = true;
+      }
+    }
+    for (const r of this.world.ramps) {
+      const t = rayRamp(ox, oy, oz, dx, dy, dz, r, bestT);
+      if (t !== null && t < bestT) {
+        bestT = t;
+        bestSurface = r.surface;
+        any = true;
+      }
+    }
+
+    if (!any) return null;
+    return { t: bestT, surface: bestSurface };
+  }
+
   /** Returns true if a vertical capsule at (x, yBottom, z) would intersect
    *  any non-walkable box (or a walkable box that goes through us). Used to
    *  block crouch-uncrouch when there's a low ceiling. */
@@ -221,4 +255,112 @@ function rampHeightAt(x: number, z: number, r: RampCollider): number | null {
 function rampNormalY(r: RampCollider): number {
   const ln = Math.hypot(r.length, r.height);
   return r.length / ln;
+}
+
+/** Slab-test ray vs OBB (yaw-rotated). Returns t at first entry, or null. */
+function rayObb(
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  b: BoxCollider,
+  maxT: number,
+): number | null {
+  // Transform ray origin and direction into the box's local frame.
+  const rx = ox - b.centerX;
+  const ry = oy - b.centerY;
+  const rz = oz - b.centerZ;
+  const lox = rx * b.cosYaw - rz * b.sinYaw;
+  const loy = ry;
+  const loz = rx * b.sinYaw + rz * b.cosYaw;
+  const ldx = dx * b.cosYaw - dz * b.sinYaw;
+  const ldy = dy;
+  const ldz = dx * b.sinYaw + dz * b.cosYaw;
+
+  // Slab test in local space.
+  let tMin = -Infinity;
+  let tMax = Infinity;
+  const slab = (lo: number, ld: number, half: number): boolean => {
+    if (Math.abs(ld) < 1e-9) {
+      return lo >= -half && lo <= half;
+    }
+    const t1 = (-half - lo) / ld;
+    const t2 = ( half - lo) / ld;
+    const tNear = Math.min(t1, t2);
+    const tFar = Math.max(t1, t2);
+    if (tNear > tMin) tMin = tNear;
+    if (tFar < tMax) tMax = tFar;
+    return tMin <= tMax;
+  };
+  if (!slab(lox, ldx, b.halfX)) return null;
+  if (!slab(loy, ldy, b.halfY)) return null;
+  if (!slab(loz, ldz, b.halfZ)) return null;
+
+  // Pick the nearest non-negative t.
+  let t: number;
+  if (tMin >= 0) t = tMin;
+  else if (tMax >= 0) t = tMax;
+  else return null;
+  if (t > maxT) return null;
+  return t;
+}
+
+/** Ray vs the slanted top of a ramp triangle prism. Approximated with
+ *  an AABB intersection then a plane test on the slope. Sufficient for
+ *  bullet-vs-ramp at our resolution. */
+function rayRamp(
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  r: RampCollider,
+  maxT: number,
+): number | null {
+  // First, AABB cull.
+  if (!rayAabb(ox, oy, oz, dx, dy, dz, r.aabbMinX, r.aabbMinY, r.aabbMinZ, r.aabbMaxX, r.aabbMaxY, r.aabbMaxZ, maxT)) {
+    return null;
+  }
+  // Test against the slanted plane: y = originY + (height/length) * lx,
+  // where lx = (worldX - originX) * cosYaw - (worldZ - originZ) * sinYaw
+  // Equivalently: ax + cz + by = d, where
+  //   a = -(height/length) * cosYaw
+  //   c =  (height/length) * sinYaw
+  //   b = 1
+  //   d = originY - (height/length) * (originX * (-cosYaw) + originZ * sinYaw)
+  // Easier to plug in directly:
+  const slope = r.height / r.length;
+  // Walk t along the ray in 0..maxT and check at intersection.
+  const denom = dy - slope * (dx * r.cosYaw - dz * r.sinYaw);
+  if (Math.abs(denom) < 1e-9) return null;
+  const lxOrigin = (ox - r.originX) * r.cosYaw - (oz - r.originZ) * r.sinYaw;
+  const tNum = (r.originY + slope * lxOrigin) - oy;
+  const t = tNum / denom;
+  if (t < 0 || t > maxT) return null;
+  // Verify hit point lies inside the ramp footprint.
+  const hx = ox + dx * t;
+  const hz = oz + dz * t;
+  const wx = hx - r.originX;
+  const wz = hz - r.originZ;
+  const lx = wx * r.cosYaw - wz * r.sinYaw;
+  const lz = wx * r.sinYaw + wz * r.cosYaw;
+  if (lx < 0 || lx > r.length) return null;
+  const hw = r.width / 2;
+  if (lz < -hw || lz > hw) return null;
+  return t;
+}
+
+function rayAabb(
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  minX: number, minY: number, minZ: number,
+  maxX: number, maxY: number, maxZ: number,
+  maxT: number,
+): boolean {
+  let tMin = -Infinity;
+  let tMax = Infinity;
+  const tx1 = Math.abs(dx) < 1e-9 ? (ox >= minX && ox <= maxX ? -Infinity : Infinity) : (minX - ox) / dx;
+  const tx2 = Math.abs(dx) < 1e-9 ? (ox >= minX && ox <= maxX ? Infinity : -Infinity) : (maxX - ox) / dx;
+  const ty1 = Math.abs(dy) < 1e-9 ? (oy >= minY && oy <= maxY ? -Infinity : Infinity) : (minY - oy) / dy;
+  const ty2 = Math.abs(dy) < 1e-9 ? (oy >= minY && oy <= maxY ? Infinity : -Infinity) : (maxY - oy) / dy;
+  const tz1 = Math.abs(dz) < 1e-9 ? (oz >= minZ && oz <= maxZ ? -Infinity : Infinity) : (minZ - oz) / dz;
+  const tz2 = Math.abs(dz) < 1e-9 ? (oz >= minZ && oz <= maxZ ? Infinity : -Infinity) : (maxZ - oz) / dz;
+  tMin = Math.max(tMin, Math.min(tx1, tx2), Math.min(ty1, ty2), Math.min(tz1, tz2));
+  tMax = Math.min(tMax, Math.max(tx1, tx2), Math.max(ty1, ty2), Math.max(tz1, tz2));
+  return tMax >= Math.max(0, tMin) && tMin <= maxT;
 }
