@@ -28,6 +28,10 @@ export interface FiringInput {
   triggerEdge: boolean;
   /** Reload key pressed this tick. */
   reloadEdge: boolean;
+  /** Mouse 2 (right) was pressed THIS tick. Only used by weapons that
+   *  define a `secondaryAttack` (currently the knife stab). Scoped
+   *  weapons handle RMB outside the firing controller. */
+  secondaryEdge?: boolean;
 }
 
 export interface FireRequest {
@@ -40,14 +44,17 @@ export class FiringController {
     private readonly combat: CombatSystem,
   ) {}
 
-  /** Advance state and possibly fire. Returns true if a shot was fired. */
+  /** Advance state and possibly fire. Returns the kind of shot fired,
+   *  or `'none'` if nothing happened this tick. `'primary'` is the
+   *  default LMB attack; `'secondary'` is the melee alt-fire (knife
+   *  stab). The caller uses this to pick the right view-model animation. */
   step(
     nowMs: number,
     shooter: Character,
     inst: WeaponInstance,
     aim: FireRequest,
     input: FiringInput,
-  ): boolean {
+  ): 'none' | 'primary' | 'secondary' {
     // Melee weapons have no magazine — they're always "loaded" once deployed.
     const isMelee = inst.def.fireMode === 'melee';
 
@@ -80,26 +87,32 @@ export class FiringController {
         // optic and so the player can see the world while reloading.
         if (inst.scopeLevel > 0) inst.scopeLevel = 0;
         events.emit('combat:reload', { shooterId: shooter.id, weapon: inst.def.id, tMs: nowMs });
-        return false;
+        return 'none';
       }
     }
 
     // 4) Fire if allowed.
     const canFire = inst.state === 'ready' && (isMelee || inst.ammoMag > 0);
-    if (!canFire) return false;
+    if (!canFire) return 'none';
 
-    const fireIntervalMs = 60_000 / inst.def.rpm;
-    if (nowMs - inst.lastFireMs < fireIntervalMs) return false;
-
+    // Decide which attack — primary (LMB) or melee secondary (RMB) —
+    // and pick the matching rate cap + damage multiplier. RMB only does
+    // anything when the weapon defines a `secondaryAttack`.
     const fireMode = inst.def.fireMode;
+    const secondary = isMelee && inst.def.secondaryAttack && input.secondaryEdge === true;
+    const secondaryDef = secondary ? inst.def.secondaryAttack! : null;
+    const fireIntervalMs = 60_000 / (secondaryDef?.rpm ?? inst.def.rpm);
+    if (nowMs - inst.lastFireMs < fireIntervalMs) return 'none';
+
     let shouldFire = false;
-    if (fireMode === 'auto') shouldFire = input.triggerHeld;
+    if (secondary) shouldFire = true;
+    else if (fireMode === 'auto') shouldFire = input.triggerHeld;
     else if (fireMode === 'semi') shouldFire = input.triggerEdge;
     else if (fireMode === 'bolt') shouldFire = input.triggerEdge;
     else if (fireMode === 'burst') shouldFire = input.triggerEdge;
-    else if (fireMode === 'melee') shouldFire = input.triggerEdge; // simplified
+    else if (fireMode === 'melee') shouldFire = input.triggerEdge;
 
-    if (!shouldFire) return false;
+    if (!shouldFire) return 'none';
 
     // Compute inaccuracy at fire time. A scoped weapon trades movement for
     // pinpoint precision — apply the configured multiplier when active.
@@ -119,6 +132,7 @@ export class FiringController {
       weapon: inst.def,
       sprayIndex: inst.sprayIndex,
       inaccuracyDeg: inacc,
+      damageMul: secondaryDef?.damageMul ?? 1,
     });
     void result; // visuals consume events
 
@@ -152,6 +166,6 @@ export class FiringController {
     if (inst.scopeLevel > 0) {
       inst.scopeLevel = 0;
     }
-    return true;
+    return secondary ? 'secondary' : 'primary';
   }
 }

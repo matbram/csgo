@@ -32,6 +32,10 @@ export interface FireOptions {
   sprayIndex: number;
   /** Inaccuracy in degrees (precomputed from motion). */
   inaccuracyDeg: number;
+  /** Per-shot damage multiplier on top of the weapon's base damage.
+   *  Used by alternate-fire modes (e.g. knife stab) to deal more damage
+   *  without forking the WeaponDef. Defaults to 1. */
+  damageMul?: number;
 }
 
 export interface FireResult {
@@ -119,11 +123,13 @@ export class CombatSystem {
 
     // Resolve.
     if (bestVictim) {
+      const damageMul = opts.damageMul ?? 1;
       const dmg = computeDamage({
         weapon,
         hitbox: bestKind,
         distance: closestT,
         victim: { hp: bestVictim.hp, armor: bestVictim.armor, helmet: bestVictim.helmet },
+        damageMul,
       });
 
       // Apply damage (integer in CS:GO; we use floor for HP, floor for armor).

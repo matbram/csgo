@@ -295,17 +295,18 @@ function bootstrap(): void {
       if (switched) viewModel.setWeapon(activeInstance(invObj));
     }
 
-    // Scope toggle (RMB). Only valid when alive, pointer-locked, no menus,
-    // and the active weapon supports scoping. The actual scope state lives
-    // on the WeaponInstance so it's reset by switchTo / refillInventory.
-    if (
-      input.wasMousePressed(2) &&
-      input.pointerLocked &&
-      !buyMenu.isOpen() &&
-      localPlayer.character.alive &&
-      inst &&
-      (inst.def.scopeLevels ?? 0) > 0
-    ) {
+    // RMB has two roles: scope toggle on scoped weapons, and the heavier
+    // attack on melee. The two are mutually exclusive — no weapon both
+    // scopes and stabs — so we dispatch on fire mode here. The melee path
+    // is consumed via `secondaryEdge` in `firing.step` below; the scope
+    // path runs immediately.
+    const rmbEdge = input.wasMousePressed(2);
+    const rmbAvailable = rmbEdge
+      && input.pointerLocked
+      && !buyMenu.isOpen()
+      && localPlayer.character.alive
+      && inst !== null;
+    if (rmbAvailable && inst && inst.def.fireMode !== 'melee' && (inst.def.scopeLevels ?? 0) > 0) {
       cycleScope(inst);
     }
     // If the player died this tick (or any time their inventory is in a
@@ -333,6 +334,9 @@ function bootstrap(): void {
       const fwdY = Math.sin(py);
       const fwdZ = Math.cos(yaw) * cosP;
 
+      // Only forward RMB to firing for melee weapons — for scoped guns
+      // RMB is already consumed by the scope toggle above.
+      const meleeSecondaryEdge = rmbEdge && activeInst.def.fireMode === 'melee';
       const fired = firing.step(time.simMs, localPlayer.character, activeInst, {
         ox: eyeX, oy: eyeY, oz: eyeZ,
         fwdX, fwdY, fwdZ,
@@ -340,10 +344,11 @@ function bootstrap(): void {
         triggerHeld: input.isMouseDown(0),
         triggerEdge: input.wasMousePressed(0),
         reloadEdge: input.wasPressed('KeyR'),
+        secondaryEdge: meleeSecondaryEdge,
       });
-      if (fired) {
+      if (fired !== 'none') {
         if (activeInst.def.fireMode === 'melee') {
-          viewModel.triggerSwing();
+          viewModel.triggerSwing(fired === 'secondary' ? 'stab' : 'slash');
         } else {
           viewModel.addKick(activeInst.def.cameraKickDeg.x * 0.05, activeInst.def.cameraKickDeg.y * 0.05, 0.04);
         }

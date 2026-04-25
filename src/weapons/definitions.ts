@@ -68,6 +68,17 @@ export interface WeaponDef {
   scopedInaccuracyMul?: number;
   /** Movement speed scale while scoped (any level). Replaces moveSpeedScale. */
   scopedMoveSpeedScale?: number;
+  /** Optional alternate fire (RMB) for melee weapons: a heavier, slower
+   *  attack. The base attack stays on LMB and uses the top-level rpm /
+   *  baseDamage / falloff fields. */
+  secondaryAttack?: {
+    /** Damage multiplier applied on top of baseDamage. */
+    damageMul: number;
+    /** Rate cap for the secondary attack (rounds per minute). */
+    rpm: number;
+    /** Hint for the view model — selects the right animation curve. */
+    animation: 'stab';
+  };
 }
 
 /** AK-47 spray pattern (degrees). Approximation of the real pattern:
@@ -334,6 +345,11 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     killReward: 1500,
     fireSound: 'knife_swing',
     reloadSound: 'knife_swing',
+    secondaryAttack: {
+      damageMul: 1.55,    // 65 → ~101 chest, no-armor
+      rpm: 50,            // ~1.2 s between stabs
+      animation: 'stab',
+    },
   },
   c4: {
     id: 'c4',

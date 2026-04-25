@@ -27,8 +27,13 @@ interface ViewModelMaterials {
 }
 
 /** Total swing animation duration in ms. Calibrated to fit inside the
- *  knife's fire interval (90 rpm → 667 ms) with margin for the reset. */
+ *  knife's primary fire interval (90 rpm → 667 ms) with margin. */
 const SWING_DURATION_MS = 280;
+/** Stab animation is longer to match the slower secondary-attack rate
+ *  (50 rpm → 1200 ms). */
+const STAB_DURATION_MS = 450;
+
+type MeleeKind = 'slash' | 'stab';
 
 interface SwingPose {
   posX: number; posY: number; posZ: number;
@@ -74,6 +79,58 @@ function swingCurve(t: number, dir: number): SwingPose {
     rotX: 0.40 * k,
     rotY: -0.20 * k * dir,
     rotZ: -0.25 * k * dir,
+  };
+}
+
+/** Stab curve: pull the knife back and slightly up, then thrust straight
+ *  forward and hold briefly at full extension before recovering. There's
+ *  no left/right component — a stab is committed and centered. */
+function stabCurve(t: number): SwingPose {
+  if (t >= 1) return ZERO_SWING;
+  if (t < 0.25) {
+    // Wind-up: pull back and up, knife pitched up.
+    const k = t / 0.25;
+    return {
+      posX: 0,
+      posY:  0.05 * k,
+      posZ: -0.10 * k,
+      rotX: -0.45 * k,
+      rotY: 0,
+      rotZ: 0,
+    };
+  }
+  if (t < 0.42) {
+    // Thrust: forward + slight downward, knife pitches level.
+    const k = (t - 0.25) / 0.17;
+    return {
+      posX: 0,
+      posY:  0.05 - 0.06 * k,
+      posZ: -0.10 + 0.32 * k,
+      rotX: -0.45 + 0.55 * k,
+      rotY: 0,
+      rotZ: 0,
+    };
+  }
+  if (t < 0.58) {
+    // Hold at full extension — sells the impact.
+    return {
+      posX: 0,
+      posY: -0.01,
+      posZ:  0.22,
+      rotX:  0.10,
+      rotY: 0,
+      rotZ: 0,
+    };
+  }
+  // Recovery: ease back.
+  const k = 1 - (t - 0.58) / 0.42;
+  return {
+    posX: 0,
+    posY: -0.01 * k,
+    posZ:  0.22 * k,
+    rotX:  0.10 * k,
+    rotY: 0,
+    rotZ: 0,
   };
 }
 
@@ -139,11 +196,13 @@ export class ViewModel {
   /** Whether the view model meshes should currently be rendered. */
   private visible = true;
   /** Melee swing tween (0..1). 1 means no swing in progress; advances to 1
-   *  over `SWING_DURATION_MS` once `triggerSwing()` is called. */
+   *  over the duration appropriate for the current `swingKind`. */
   private swingT = 1;
-  /** Direction sign for the current swing. Alternates each swing so
-   *  consecutive slashes don't look identical. */
+  /** Direction sign for the current slash. Alternates each swing so
+   *  consecutive slashes don't look identical. Unused for stabs. */
   private swingDir = 1;
+  /** Which animation curve the current swing is playing. */
+  private swingKind: MeleeKind = 'slash';
 
   constructor(parent: Node) {
     const scene = getScene();
@@ -182,11 +241,13 @@ export class ViewModel {
     this.isReloading = active;
   }
 
-  /** Kick off a melee swing tween. The animation is short (~280ms) so it
-   *  comfortably fits inside a knife's fire interval (90 RPM ≈ 667ms). */
-  triggerSwing(): void {
+  /** Kick off a melee swing tween. `kind` selects slash (LMB, alternates
+   *  L/R) or stab (RMB, centered thrust). The animation duration is
+   *  chosen to fit within the matching attack's fire interval. */
+  triggerSwing(kind: MeleeKind = 'slash'): void {
     this.swingT = 0;
-    this.swingDir = -this.swingDir;
+    this.swingKind = kind;
+    if (kind === 'slash') this.swingDir = -this.swingDir;
   }
 
   /** Hide or show the weapon mesh (e.g. while a sniper scope is active). */
@@ -239,14 +300,15 @@ export class ViewModel {
     reloadOffsetY = -0.10 * this.reloadProgress;
     reloadRotZ = -0.4 * this.reloadProgress;
 
-    // Swing tween. Three phases:
-    //   wind-up (0.00 → 0.30): pull back/up
-    //   strike  (0.30 → 0.55): thrust forward
-    //   recover (0.55 → 1.00): return to neutral
+    // Swing tween. Slash and stab share the same time variable but use
+    // different curves and durations.
     if (this.swingT < 1) {
-      this.swingT = Math.min(1, this.swingT + dtMs / SWING_DURATION_MS);
+      const dur = this.swingKind === 'stab' ? STAB_DURATION_MS : SWING_DURATION_MS;
+      this.swingT = Math.min(1, this.swingT + dtMs / dur);
     }
-    const swing = swingCurve(this.swingT, this.swingDir);
+    const swing = this.swingKind === 'stab'
+      ? stabCurve(this.swingT)
+      : swingCurve(this.swingT, this.swingDir);
 
     const base = this.hand.position;
     base.x = 0.18 + bobX + this.smoothedKickX * 0.04 + swing.posX;
