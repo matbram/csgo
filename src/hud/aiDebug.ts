@@ -16,6 +16,7 @@ import { LinesMesh } from '@babylonjs/core/Meshes/linesMesh';
 import { CreateLines } from '@babylonjs/core/Meshes/Builders/linesBuilder';
 import { getScene } from '../engine/scene';
 import type { Bot } from '../entities/bot';
+import type { TeamBlackboard } from '../ai/blackboard';
 
 interface PathLine {
   mesh: LinesMesh;
@@ -58,15 +59,27 @@ export class AiDebugHud {
    *  enough that we don't gate on `enabled` for the panel-text update
    *  (it's invisible anyway when disabled). The expensive path-mesh
    *  refresh is gated. */
-  update(bots: ReadonlyArray<Bot>): void {
+  update(bots: ReadonlyArray<Bot>, tBoard?: TeamBlackboard, ctBoard?: TeamBlackboard): void {
     if (!this.enabled) return;
-    this.refreshPanel(bots);
+    this.refreshPanel(bots, tBoard, ctBoard);
     this.refreshPaths(bots);
   }
 
-  private refreshPanel(bots: ReadonlyArray<Bot>): void {
+  private refreshPanel(
+    bots: ReadonlyArray<Bot>,
+    tBoard?: TeamBlackboard,
+    ctBoard?: TeamBlackboard,
+  ): void {
     const rows: string[] = [];
     rows.push('<div class="ai-debug-title">AI</div>');
+    if (tBoard || ctBoard) {
+      const tStrat = tBoard?.strategy ?? '-';
+      const ctStrat = ctBoard?.strategy ?? '-';
+      rows.push(`<div class="ai-strategy">
+        <span class="t">T: ${escape(tStrat)}</span>
+        <span class="ct">CT: ${escape(ctStrat)}</span>
+      </div>`);
+    }
     for (const bot of bots) {
       const c = bot.character;
       const inv = c.inventory;
@@ -81,12 +94,18 @@ export class AiDebugHud {
       const known = bot.perception.known.size;
       const status = c.alive ? bot.brain.state : 'DEAD';
       const teamCls = c.team === 'T' ? 't' : 'ct';
+      const board = c.team === 'T' ? tBoard : ctBoard;
+      const role = board?.roleByBot.get(bot.id) ?? '-';
+      const obj = board?.objectiveByBot.get(bot.id);
+      const target = obj?.callout ?? '-';
       rows.push(`<div class="ai-row ${teamCls}">
         <span class="id">${escape(bot.id)}</span>
+        <span class="role">${escape(role)}</span>
         <span class="state">${escape(status)}</span>
         <span class="hp">${c.hp}</span>
         <span class="wpn">${escape(wpn)}</span>
         <span class="ammo">${escape(ammo)}</span>
+        <span class="target">${escape(target)}</span>
         <span class="known">k:${known}</span>
       </div>`);
     }

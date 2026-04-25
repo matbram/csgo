@@ -21,8 +21,9 @@ import { activeInstance } from '../weapons/inventory';
 import type { World } from '../map/world';
 import type { BombState } from '../match/bomb';
 import { pointInPolygon2D } from '../map/world';
+import type { TeamBlackboard } from './blackboard';
 
-export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload' | 'plant' | 'defuse';
+export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload' | 'plant' | 'defuse' | 'save';
 
 const DECISION_INTERVAL_MS = 200;     // 5 Hz
 /** Bonus utility for the action that's already running so we don't
@@ -32,6 +33,9 @@ const HYSTERESIS = 5;
  *  meters in XZ — slightly larger than the defuse range (1.0 m) so the
  *  brain commits to a defuse approach before the FSM accepts it. */
 const DEFUSE_APPROACH_M = 1.4;
+/** HP threshold below which a bot is willing to retreat. Combined with
+ *  team-vs-team count this drives the Save action. */
+const SAVE_LOW_HP = 60;
 
 export interface BrainContext {
   /** All characters in the world (so the brain can resolve a known-enemy
@@ -41,6 +45,17 @@ export interface BrainContext {
   bomb: BombState | null;
   /** World — needed for bombsite polygon tests. */
   world: World;
+  /** Team blackboard — drives objectives, save logic, shared intel. */
+  blackboard: TeamBlackboard | null;
+  /** Number of teammates alive (excludes self) and number of enemies
+   *  alive. The strategist refreshes these every tick before brains
+   *  step. */
+  teammatesAlive: number;
+  enemiesAlive: number;
+  /** Centroid of this team's spawn buy zone. Used by Save to retreat
+   *  toward safety. */
+  spawnX: number;
+  spawnZ: number;
 }
 
 export class Brain {
@@ -121,6 +136,12 @@ export class Brain {
         followPath = false;
         this.runDefuse(bot, firing, nowMs);
         break;
+      case 'save':
+        // Save retreats toward spawn — let the path follower run, but
+        // the strategist owns the Save objective so this is just normal
+        // pathing toward a different target.
+        this.runIdleFire(bot, firing, nowMs);
+        break;
       case 'movetoObj':
         // Movement happens via stepBot's path follower. Brain only feeds a
         // null fire input so weapon state ticks normally (deploy + reload
@@ -150,6 +171,7 @@ export class Brain {
       idle: 0,
       plant: 0,
       defuse: 0,
+      save: 0,
     };
 
     // ---- Plant: T carrier on a bombsite, no immediate threat.
@@ -179,6 +201,21 @@ export class Brain {
       if (dx * dx + dz * dz <= DEFUSE_APPROACH_M * DEFUSE_APPROACH_M) {
         u.defuse = 110;
       }
+    }
+
+    // ---- Save: outnumbered + low HP, no critical task pending. T bots
+    // never save while they could plant; CT bots never save while a
+    // bomb is planted — both situations trump survival economics.
+    const outnumbered = ctx.enemiesAlive >= ctx.teammatesAlive + 2;
+    const wounded = bot.character.hp <= SAVE_LOW_HP;
+    const ecoSavePlan = ctx.blackboard?.strategy === 't_eco_save' || ctx.blackboard?.strategy === 'ct_eco_save';
+    const tCanPlant = bot.character.team === 'T' && bot.character.inventory?.c4 != null;
+    const ctMustDefuse = bot.character.team === 'CT' && bomb && bomb.phase === 'planted';
+    if (
+      !tCanPlant && !ctMustDefuse &&
+      ((outnumbered && wounded) || ecoSavePlan)
+    ) {
+      u.save = 70;     // beats moveto/idle/reload but loses to engage on visible
     }
 
     if (target && target.confidence === 'visible' && inst && inst.def.fireMode !== 'planted') {
@@ -212,6 +249,7 @@ export class Brain {
         case 'idle':      u.idle += HYSTERESIS; break;
         case 'plant':     u.plant += HYSTERESIS; break;
         case 'defuse':    u.defuse += HYSTERESIS; break;
+        case 'save':      u.save += HYSTERESIS; break;
       }
     }
 
@@ -220,6 +258,7 @@ export class Brain {
     if (u.engage > bestU) { next = 'engage'; bestU = u.engage; }
     if (u.reload > bestU) { next = 'reload'; bestU = u.reload; }
     if (u.moveto > bestU) { next = 'movetoObj'; bestU = u.moveto; }
+    if (u.save   > bestU) { next = 'save';   bestU = u.save;   }
     if (u.plant  > bestU) { next = 'plant';  bestU = u.plant;  }
     if (u.defuse > bestU) { next = 'defuse'; bestU = u.defuse; }
 

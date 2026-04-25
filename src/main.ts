@@ -43,7 +43,8 @@ import { AiDebugHud } from './hud/aiDebug';
 import { createBot, snapBotToCharacterPose, setBotObjective, stepBot, syncBotMesh, type Bot } from './entities/bot';
 import { NavGrid } from './nav/grid';
 import { PathService } from './nav/pathService';
-import { pickTeamObjectives } from './ai/objective';
+import { makeBlackboard, aggregateKnown, refreshTeamRoster, aliveCount } from './ai/blackboard';
+import { planRoundStart, reactToBombPlanted } from './ai/strategist';
 import type { Character } from './entities/character';
 import { pointInPolygon2D } from './map/world';
 import { makeMatch, beginRound, endRound, applyHalftime, stepMatch, type MatchState } from './match/match';
@@ -133,6 +134,28 @@ function bootstrap(): void {
     characters.push(bot.character);
   }
 
+  // 7.5) Per-team blackboards. The strategist writes plans into these
+  // each round; bot brains read objectives + role + shared intel from
+  // them every tick. The local player belongs to the T side after the
+  // halftime swap may flip — we don't mutate the local player's brain
+  // (they don't have one) but we still let them be tracked as alive in
+  // the T blackboard so the bot save heuristic counts correctly.
+  const tBoard = makeBlackboard('T');
+  const ctBoard = makeBlackboard('CT');
+
+  // Compute spawn centroids once — used by the bot Save state to pick
+  // a retreat target. Spawn polygons aren't authored separately, so we
+  // average the spawn points for each team.
+  const spawnCentroid = (side: 'T' | 'CT'): { x: number; z: number } => {
+    const sps = world.spawnsForTeam(side);
+    if (sps.length === 0) return { x: 0, z: side === 'T' ? -38 : 28 };
+    let sx = 0, sz = 0;
+    for (const s of sps) { sx += s.pos.x; sz += s.pos.z; }
+    return { x: sx / sps.length, z: sz / sps.length };
+  };
+  const tSpawnCentroid = spawnCentroid('T');
+  const ctSpawnCentroid = spawnCentroid('CT');
+
   // 8) Match state
   let match: MatchState = makeMatch({
     players: [
@@ -184,6 +207,17 @@ function bootstrap(): void {
     if (vic) vic.deaths += 1;
   });
 
+  // Bomb plant → both strategists re-plan: T defends the planted site,
+  // CT swings into a retake formation. The bot brains pick up the new
+  // objectives via the per-tick blackboard read.
+  events.on('match:bombPlanted', () => {
+    const bombInfo = mirrorBomb(match.round?.bomb);
+    if (bombInfo.site && bombInfo.pos) {
+      reactToBombPlanted(tBoard, bots, bombInfo, world, time.simMs);
+      reactToBombPlanted(ctBoard, bots, bombInfo, world, time.simMs);
+    }
+  });
+
   // Gunshot → sound perception. Every bot on the opposing team within
   // hearing range gets a 'sound' confidence ping at the shooter's
   // position. Bots already in 'visible' state on the same shooter keep
@@ -225,16 +259,59 @@ function bootstrap(): void {
       if (bot.character.team === 'T') tBots.push(bot);
       else ctBots.push(bot);
     }
-    const tObj = pickTeamObjectives('T', tBots.map(b => b.id), world, match.round.number);
-    const ctObj = pickTeamObjectives('CT', ctBots.map(b => b.id), world, match.round.number);
-    for (let i = 0; i < tBots.length; i++) {
-      const o = tObj[i]!;
-      setBotObjective(tBots[i]!, o.x, o.z);
+    // Strategists pick a plan, assign roles, write objectives. Bots then
+    // pull their objective from their team's blackboard.
+    const round = match.round.number;
+    planRoundStart(tBoard, tBots, match.players, world, round, time.simMs);
+    planRoundStart(ctBoard, ctBots, match.players, world, round, time.simMs);
+    applyBlackboardObjectives(tBoard, tBots);
+    applyBlackboardObjectives(ctBoard, ctBots);
+  };
+
+  const applyBlackboardObjectives = (
+    bb: ReturnType<typeof makeBlackboard>,
+    teamBots: Bot[],
+  ): void => {
+    for (const bot of teamBots) {
+      const obj = bb.objectiveByBot.get(bot.id);
+      if (!obj) continue;
+      setBotObjective(bot, obj.x, obj.z);
     }
-    for (let i = 0; i < ctBots.length; i++) {
-      const o = ctObj[i]!;
-      setBotObjective(ctBots[i]!, o.x, o.z);
+  };
+
+  /** Per-tick helper: keep `bot.objective` in sync with the strategist's
+   *  current assignment, except when the brain is in Save mode — then
+   *  the retreat target wins. We re-apply on every tick so a state
+   *  transition out of Save automatically restores the team plan
+   *  without a separate "exit save" hook. */
+  const applyBotObjectiveFromBoard = (
+    bot: Bot,
+    bb: ReturnType<typeof makeBlackboard>,
+    spawnPos: { x: number; z: number },
+  ): void => {
+    if (bot.brain.state === 'save') {
+      // Retreat to spawn. setBotObjective is idempotent if the target
+      // matches — but it clears the path each call, so guard on a small
+      // epsilon to avoid replanning every frame.
+      const cur = bot.objective;
+      if (!cur || Math.abs(cur.x - spawnPos.x) > 0.5 || Math.abs(cur.z - spawnPos.z) > 0.5) {
+        setBotObjective(bot, spawnPos.x, spawnPos.z);
+      }
+      return;
     }
+    const obj = bb.objectiveByBot.get(bot.id);
+    if (!obj) return;
+    const cur = bot.objective;
+    if (!cur || Math.abs(cur.x - obj.x) > 0.5 || Math.abs(cur.z - obj.z) > 0.5) {
+      setBotObjective(bot, obj.x, obj.z);
+    }
+  };
+
+  /** Adapt the match's BombState into the blackboard's BombInfo shape.
+   *  Returns the "no bomb" sentinel when there's no live bomb state. */
+  const mirrorBomb = (b: import('./match/bomb').BombState | null | undefined): import('./ai/blackboard').BombInfo => {
+    if (!b) return { phase: 'carried', carrierId: null, site: null, pos: null };
+    return { phase: b.phase, carrierId: b.carrierId, site: b.site, pos: b.pos };
   };
 
 
@@ -445,10 +522,44 @@ function bootstrap(): void {
     // decision into stepBot so the controller stays the single source of
     // truth for movement.
     if (match.round?.phase === 'live') {
-      const brainCtx = { characters, bomb: match.round?.bomb ?? null, world };
+      // Blackboard refresh once per tick: aggregate per-bot KnownEnemies
+      // into the team map, mirror the bomb FSM, and prune stale role
+      // entries. This is cheap (a handful of map ops over 9 bots) and
+      // gives every brain a consistent view this tick.
+      const bombInfo = mirrorBomb(match.round?.bomb);
+      refreshTeamRoster(tBoard, bots, bombInfo);
+      refreshTeamRoster(ctBoard, bots, bombInfo);
+      aggregateKnown(tBoard, bots, time.simMs);
+      aggregateKnown(ctBoard, bots, time.simMs);
+
+      // Local player counts toward the alive total for save heuristics.
+      const localT = localPlayer.character.team === 'T' && localPlayer.character.alive ? 1 : 0;
+      const localCT = localPlayer.character.team === 'CT' && localPlayer.character.alive ? 1 : 0;
+      const tAlive = aliveCount(tBoard, bots) + localT;
+      const ctAlive = aliveCount(ctBoard, bots) + localCT;
+
       for (const bot of bots) {
         if (!bot.character.alive) continue;
         bot.perception.maybeStep(bot.character, characters, query, time.simMs);
+        const isT = bot.character.team === 'T';
+        const board = isT ? tBoard : ctBoard;
+        const teammates = (isT ? tAlive : ctAlive) - 1;   // exclude self
+        const enemies = isT ? ctAlive : tAlive;
+        const spawnPos = isT ? tSpawnCentroid : ctSpawnCentroid;
+        const brainCtx = {
+          characters,
+          bomb: match.round?.bomb ?? null,
+          world,
+          blackboard: board,
+          teammatesAlive: teammates,
+          enemiesAlive: enemies,
+          spawnX: spawnPos.x,
+          spawnZ: spawnPos.z,
+        };
+        // Save state retargets the bot's path to spawn. We re-apply here
+        // each tick so a transition out of save restores the strategist's
+        // original objective even if the brain didn't write it back.
+        applyBotObjectiveFromBoard(bot, board, spawnPos);
         const decision = bot.brain.step(bot, bot.perception, brainCtx, firing, dtMs, time.simMs);
         stepBot(bot, dtMs, time.simMs, pathService, {
           followPath: decision.followPath,
@@ -641,7 +752,7 @@ function bootstrap(): void {
     );
 
     debugHud.update(renderDtMs);
-    aiDebugHud.update(bots);
+    aiDebugHud.update(bots, tBoard, ctBoard);
     combatHud.update(localPlayer.character, performance.now());
     roundHud.update(match, characters, time.simMs);
     scoreboard.update(match, characters);

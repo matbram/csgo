@@ -91,18 +91,30 @@ html, body {
   color: #d4c4a3;
   margin-bottom: 4px;
 }
+.ai-debug-panel .ai-strategy {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 220, 170, 0.12);
+}
+.ai-debug-panel .ai-strategy .t  { color: #d49a4e; }
+.ai-debug-panel .ai-strategy .ct { color: #6a9ed6; }
 .ai-debug-panel .ai-row {
   display: grid;
-  grid-template-columns: 78px 60px 32px 60px 56px 36px;
+  grid-template-columns: 70px 78px 56px 28px 56px 50px 80px 32px;
   column-gap: 6px;
   padding: 1px 0;
 }
 .ai-debug-panel .ai-row.t  .id { color: #d49a4e; }
 .ai-debug-panel .ai-row.ct .id { color: #6a9ed6; }
+.ai-debug-panel .ai-row .role  { color: #d4c4a3; }
 .ai-debug-panel .ai-row .state { color: #b6e9a0; }
 .ai-debug-panel .ai-row .hp    { color: #ffb6b6; text-align: right; }
 .ai-debug-panel .ai-row .wpn   { color: #ffd28a; }
 .ai-debug-panel .ai-row .ammo  { color: #ffe9c2; text-align: right; }
+.ai-debug-panel .ai-row .target{ color: #cfd8e3; }
 .ai-debug-panel .ai-row .known { color: #98896c; text-align: right; }
 
 /* ---------- Sniper scope overlay ---------- */
