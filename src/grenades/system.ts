@@ -45,15 +45,15 @@ interface KindParams {
 
 const PARAMS: Record<GrenadeKind, KindParams> = {
   he: {
-    fuseMs: 1500, restitution: 0.45, friction: 1.0, radius: 0.08,
+    fuseMs: 1500, detonateOnImpact: true, restitution: 0.45, friction: 1.0, radius: 0.08,
     damageRadiusM: 8.0, damageMaxHp: 98,
   },
   flashbang: {
-    fuseMs: 1500, restitution: 0.50, friction: 1.0, radius: 0.07,
+    fuseMs: 1500, detonateOnImpact: true, restitution: 0.50, friction: 1.0, radius: 0.07,
     flashRadiusM: 14.0, flashMaxMs: 3000,
   },
   smoke: {
-    fuseMs: 1500, restitution: 0.30, friction: 2.0, radius: 0.09,
+    fuseMs: 1500, detonateOnImpact: true, restitution: 0.30, friction: 2.0, radius: 0.09,
     smokeRadiusM: 3.5, smokeDurationMs: 18_000,
   },
   molotov: {
@@ -207,8 +207,9 @@ export class GrenadeSystem {
       }
       g.lastNormalY = hit.ny;
       events.emit('grenade:bounce', { grenadeId: g.id, x: g.pos.x, y: g.pos.y, z: g.pos.z, tMs: nowMs });
-      if (p.detonateOnImpact && hit.ny > 0.6) {
-        // Molotov: spread fire on the floor we just hit.
+      // Molotov needs a floor-facing surface so its fire patch sits on
+      // the ground; HE / flash / smoke detonate on any solid contact.
+      if (p.detonateOnImpact && (g.kind !== 'molotov' || hit.ny > 0.6)) {
         this.detonate(g, nowMs);
         return;
       }
@@ -228,7 +229,10 @@ export class GrenadeSystem {
         g.vel.z *= Math.max(0, 1 - fric);
       }
       g.lastNormalY = 1;
-      if (p.detonateOnImpact && Math.abs(g.vel.x) + Math.abs(g.vel.z) < 1.5) {
+      // Ground touch counts as impact for HE / flash / smoke. Molotov
+      // is allowed to skip-roll briefly so it lands flat — it detonates
+      // once it's slowed enough that the fire patch won't slide.
+      if (p.detonateOnImpact && (g.kind !== 'molotov' || Math.abs(g.vel.x) + Math.abs(g.vel.z) < 1.5)) {
         this.detonate(g, nowMs);
         return;
       }
