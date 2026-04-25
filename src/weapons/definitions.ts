@@ -8,7 +8,7 @@
 
 export type WeaponId =
   | 'ak47' | 'm4a4' | 'usp_s' | 'glock18' | 'awp' | 'knife' | 'c4'
-  | 'he' | 'flashbang' | 'smoke' | 'molotov';
+  | 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';
 
 export type WeaponSlot = 'primary' | 'secondary' | 'knife' | 'grenade' | 'c4';
 export type WeaponCategory = 'rifle' | 'smg' | 'pistol' | 'sniper' | 'shotgun' | 'lmg' | 'knife' | 'bomb' | 'grenade';
@@ -397,10 +397,14 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     id: 'molotov', displayName: 'Molotov', cost: 400, killReward: 100,
     fireSound: 'grenade_throw',
   }),
+  decoy: makeGrenadeDef({
+    id: 'decoy', displayName: 'Decoy', cost: 50, killReward: 0,
+    fireSound: 'grenade_throw',
+  }),
 };
 
 interface GrenadeFactoryArgs {
-  id: 'he' | 'flashbang' | 'smoke' | 'molotov';
+  id: 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';
   displayName: string;
   cost: number;
   killReward: number;

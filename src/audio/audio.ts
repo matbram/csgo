@@ -62,6 +62,19 @@ function generateAllSounds(): void {
   if (win) buffers.set('round_win', win);
   const lose = synthesizeLose();
   if (lose) buffers.set('round_lose', lose);
+  // Grenade SFX. Detonations reuse the bomb explosion synth where the
+  // physics fits (HE) and add a few cheap ones for the rest. Throw +
+  // bounce are short transients.
+  const throwS = synthesizeThrow();
+  if (throwS) buffers.set('grenade_throw', throwS);
+  const bounce = synthesizeBounce();
+  if (bounce) buffers.set('grenade_bounce', bounce);
+  const flashPop = synthesizeFlashPop();
+  if (flashPop) buffers.set('grenade_flash', flashPop);
+  const smokeHiss = synthesizeSmokeHiss();
+  if (smokeHiss) buffers.set('grenade_smoke', smokeHiss);
+  const fireWhoosh = synthesizeFireWhoosh();
+  if (fireWhoosh) buffers.set('grenade_molotov', fireWhoosh);
 }
 
 function synthesizeGunshot(id: WeaponId): AudioBuffer | null {
@@ -225,6 +238,94 @@ function synthesizeExplode(): AudioBuffer | null {
   return buf;
 }
 
+function synthesizeThrow(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.18);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 18);
+    // Filtered noise + low rumble — the swish + the shoulder roll.
+    const noise = (Math.random() * 2 - 1) * env * 0.45;
+    const tone = Math.sin(2 * Math.PI * 200 * t) * env * 0.15;
+    data[i] = clip(noise + tone);
+  }
+  return buf;
+}
+
+function synthesizeBounce(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.10);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 60);
+    const tap = Math.sin(2 * Math.PI * 320 * t) * env * 0.55;
+    const click = (Math.random() * 2 - 1) * Math.exp(-t * 200) * 0.35;
+    data[i] = clip(tap + click);
+  }
+  return buf;
+}
+
+function synthesizeFlashPop(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.5);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 9);
+    const burst = (Math.random() * 2 - 1) * env;
+    const ring = Math.sin(2 * Math.PI * 1200 * t) * Math.exp(-t * 4) * 0.35;
+    data[i] = clip(burst * 0.9 + ring);
+  }
+  return buf;
+}
+
+function synthesizeSmokeHiss(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 1.4);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  let lp = 0;
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    // Long exhale that ramps in then fades out.
+    const env = Math.min(1, t * 6) * Math.exp(-t * 1.2);
+    const noise = Math.random() * 2 - 1;
+    // Lowpass for the airy "hiss" character.
+    const a = 1 - Math.exp(-2 * Math.PI * 1800 / sr);
+    lp += a * (noise - lp);
+    data[i] = clip(lp * env * 0.65);
+  }
+  return buf;
+}
+
+function synthesizeFireWhoosh(): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.9);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  let lp = 0;
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 3) + 0.15;
+    const noise = (Math.random() * 2 - 1);
+    const a = 1 - Math.exp(-2 * Math.PI * 900 / sr);
+    lp += a * (noise - lp);
+    const lowRumble = Math.sin(2 * Math.PI * 80 * t) * Math.exp(-t * 5) * 0.35;
+    data[i] = clip(lp * env * 0.6 + lowRumble);
+  }
+  return buf;
+}
+
 function synthesizeWin(): AudioBuffer | null {
   if (!ctx) return null;
   const sr = ctx.sampleRate;
@@ -353,5 +454,27 @@ export function installAudio(): void {
   });
   events.on('match:roundEnd', ({ playerWon }) => {
     playSound(playerWon ? 'round_win' : 'round_lose', { volume: 0.5 });
+  });
+
+  // Grenade SFX. Throw + bounce + per-kind detonation. Decoys aren't
+  // audible per detonation — instead the decoy entity emits a fake
+  // 'combat:fire' so the existing gunshot listener handles it.
+  events.on('grenade:thrown', ({ throwerId, ox, oy, oz }) => {
+    if (throwerId === 'local') {
+      playSound('grenade_throw', { volume: 0.6 });
+    } else {
+      playSoundAt('grenade_throw', ox, oy, oz, { volume: 0.7, maxDistance: 30 });
+    }
+  });
+  events.on('grenade:bounce', ({ x, y, z }) => {
+    playSoundAt('grenade_bounce', x, y, z, { volume: 0.6, maxDistance: 25 });
+  });
+  events.on('grenade:detonated', ({ kind, x, y, z }) => {
+    switch (kind) {
+      case 'he':        playSoundAt('c4_explode',   x, y, z, { volume: 1.2, maxDistance: 250 }); break;
+      case 'flashbang': playSoundAt('grenade_flash', x, y, z, { volume: 1.0, maxDistance: 200 }); break;
+      case 'smoke':     playSoundAt('grenade_smoke', x, y, z, { volume: 0.7, maxDistance: 60 });  break;
+      case 'molotov':   playSoundAt('grenade_molotov', x, y, z, { volume: 0.8, maxDistance: 80 }); break;
+    }
   });
 }

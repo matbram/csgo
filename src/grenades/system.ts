@@ -18,7 +18,7 @@ import { events } from '../engine/events';
 import { SmokeField } from './smokeField';
 import { FirePatchField } from './firePatch';
 
-export type GrenadeKind = 'he' | 'flashbang' | 'smoke' | 'molotov';
+export type GrenadeKind = 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';
 
 interface KindParams {
   fuseMs: number;
@@ -60,6 +60,13 @@ const PARAMS: Record<GrenadeKind, KindParams> = {
     fuseMs: 700, detonateOnImpact: true, restitution: 0.10, friction: 4.0, radius: 0.08,
     fireRadiusM: 2.4, fireDurationMs: 7000,
   },
+  // Decoys bounce, settle, and "fire" intermittently for several
+  // seconds. We model the lifetime as a long fuse and emit fake
+  // gunshot events from the system while the decoy is alive — the
+  // detonation itself is silent (no real damage).
+  decoy: {
+    fuseMs: 6000, restitution: 0.30, friction: 2.5, radius: 0.07,
+  },
 };
 
 const GRAVITY = 9.81;
@@ -90,6 +97,8 @@ interface GrenadeEntity {
   /** Last surface collision normal (so the molotov spawns its fire
    *  patch on the ground rather than mid-air). */
   lastNormalY: number;
+  /** Decoy: sim ms of the next fake-shot emission. */
+  nextDecoyShotMs: number;
 }
 
 export class GrenadeSystem {
@@ -126,6 +135,8 @@ export class GrenadeSystem {
       detonateAtMs: nowMs + p.fuseMs,
       spawnedAtMs: nowMs,
       lastNormalY: 0,
+      // Decoys start firing 0.5 s after they land. Other kinds ignore this.
+      nextDecoyShotMs: nowMs + 700,
     };
     this.grenades.push(grenade);
     events.emit('grenade:thrown', {
@@ -223,6 +234,23 @@ export class GrenadeSystem {
       }
     }
 
+    // Decoy: while alive, intermittently emit a fake gunshot so bots
+    // hear something to investigate. We piggy-back on the existing
+    // 'combat:fire' channel — bot perception treats the resulting
+    // sound report as low-confidence intel, identical to a real shot.
+    if (g.kind === 'decoy' && nowMs >= g.nextDecoyShotMs) {
+      events.emit('combat:fire', {
+        shooterId: `decoy:${g.id}`,
+        weapon: 'ak47',  // arbitrary — pick a gun whose synth buffer exists
+        ox: g.pos.x, oy: g.pos.y, oz: g.pos.z,
+        dx: 0, dy: 1, dz: 0,
+        sprayIndex: 0,
+        tMs: nowMs,
+      });
+      // ~0.4..0.9 s between fake shots.
+      g.nextDecoyShotMs = nowMs + 400 + Math.random() * 500;
+    }
+
     // Fuse expiry.
     if (nowMs >= g.detonateAtMs) {
       this.detonate(g, nowMs);
@@ -249,6 +277,7 @@ export class GrenadeSystem {
       case 'flashbang': this.detonateFlash(g, nowMs); break;
       case 'smoke':     this.detonateSmoke(g, nowMs); break;
       case 'molotov':   this.detonateMolotov(g, nowMs); break;
+      case 'decoy':     /* silent — fake-fire ticks did the work */ break;
     }
   }
 

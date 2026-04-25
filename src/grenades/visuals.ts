@@ -35,6 +35,7 @@ const KIND_COLOR: Record<string, Color3> = {
   flashbang: new Color3(0.25, 0.25, 0.30),
   smoke:     new Color3(0.30, 0.30, 0.35),
   molotov:   new Color3(0.45, 0.30, 0.18),
+  decoy:     new Color3(0.55, 0.45, 0.20),
 };
 
 let particleTex: Texture | null = null;

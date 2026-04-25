@@ -57,7 +57,7 @@ export interface EventMap {
   'combat:weaponSwitch': { shooterId: string; weapon: string; tMs: number };
   'grenade:thrown': {
     grenadeId: number;
-    kind: 'he' | 'flashbang' | 'smoke' | 'molotov';
+    kind: 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';
     throwerId: string;
     ox: number; oy: number; oz: number;
     vx: number; vy: number; vz: number;
@@ -68,7 +68,7 @@ export interface EventMap {
   };
   'grenade:detonated': {
     grenadeId: number;
-    kind: 'he' | 'flashbang' | 'smoke' | 'molotov';
+    kind: 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';
     throwerId: string;
     x: number; y: number; z: number;
     tMs: number;

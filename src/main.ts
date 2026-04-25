@@ -345,10 +345,10 @@ function bootstrap(): void {
     buyPhase: boolean,
   ): import('./hud/buyMenu').BuyContext => {
     const inv = localPlayer.character.inventory;
-    const grenades = { he: 0, flashbang: 0, smoke: 0, molotov: 0, total: 0 };
+    const grenades = { he: 0, flashbang: 0, smoke: 0, molotov: 0, decoy: 0, total: 0 };
     if (inv) {
       for (const g of inv.grenades) {
-        if (g.def.id === 'he' || g.def.id === 'flashbang' || g.def.id === 'smoke' || g.def.id === 'molotov') {
+        if (g.def.id === 'he' || g.def.id === 'flashbang' || g.def.id === 'smoke' || g.def.id === 'molotov' || g.def.id === 'decoy') {
           grenades[g.def.id] += 1;
         }
       }
@@ -547,7 +547,7 @@ function bootstrap(): void {
         const rmb = input.wasMousePressed(2);
         if ((lmb || rmb) && activeInst.state === 'ready') {
           grenadeSystem.throw_(
-            activeInst.def.id as 'he' | 'flashbang' | 'smoke' | 'molotov',
+            activeInst.def.id as 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy',
             'local',
             { ox: eyeX, oy: eyeY, oz: eyeZ, fwdX, fwdY, fwdZ, power: lmb ? 'full' : 'underhand' },
             time.simMs,
