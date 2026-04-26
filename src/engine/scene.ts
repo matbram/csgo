@@ -31,8 +31,9 @@ export function createEngine(canvas: HTMLCanvasElement): EngineHandles {
   }
 
   const scene = new Scene(engine);
-  // Distant haze color matches the warm sky so the horizon blends.
-  scene.clearColor = new Color4(0.78, 0.69, 0.55, 1.0);
+  // Distant haze colour matches the cooler hot-summer sky so the
+  // horizon blends with the SkyMaterial dome.
+  scene.clearColor = new Color4(0.85, 0.83, 0.78, 1.0);
   // Useful global tweaks for an FPS:
   scene.collisionsEnabled = false;     // we do our own swept collision
   scene.useRightHandedSystem = false;  // Babylon default

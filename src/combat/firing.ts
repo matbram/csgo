@@ -28,6 +28,10 @@ export interface FiringInput {
   triggerEdge: boolean;
   /** Reload key pressed this tick. */
   reloadEdge: boolean;
+  /** Mouse 2 (right) was pressed THIS tick. Only used by weapons that
+   *  define a `secondaryAttack` (currently the knife stab). Scoped
+   *  weapons handle RMB outside the firing controller. */
+  secondaryEdge?: boolean;
 }
 
 export interface FireRequest {
@@ -40,14 +44,20 @@ export class FiringController {
     private readonly combat: CombatSystem,
   ) {}
 
-  /** Advance state and possibly fire. Returns true if a shot was fired. */
+  /** Advance state and possibly fire. Returns the kind of shot fired,
+   *  or `'none'` if nothing happened this tick. `'primary'` is the
+   *  default LMB attack; `'secondary'` is the melee alt-fire (knife
+   *  stab). The caller uses this to pick the right view-model animation. */
   step(
     nowMs: number,
     shooter: Character,
     inst: WeaponInstance,
     aim: FireRequest,
     input: FiringInput,
-  ): boolean {
+  ): 'none' | 'primary' | 'secondary' {
+    // Melee weapons have no magazine — they're always "loaded" once deployed.
+    const isMelee = inst.def.fireMode === 'melee';
+
     // 1) Advance state transitions.
     if ((inst.state === 'deploying' || inst.state === 'reloading') && nowMs >= inst.stateUntilMs) {
       if (inst.state === 'reloading') {
@@ -57,7 +67,7 @@ export class FiringController {
         inst.ammoMag += take;
         inst.ammoReserve -= take;
       }
-      inst.state = inst.ammoMag > 0 ? 'ready' : 'empty';
+      inst.state = (isMelee || inst.ammoMag > 0) ? 'ready' : 'empty';
     }
 
     // 2) Decay spray.
@@ -66,40 +76,54 @@ export class FiringController {
     }
 
     // 3) Reload request. Allowed from 'ready' or 'empty' — i.e. anytime the
-    //    weapon isn't currently deploying or already reloading.
+    //    weapon isn't currently deploying or already reloading. Melee
+    //    weapons have no magazine so reload is a no-op for them.
     const canReload = (inst.state === 'ready' || inst.state === 'empty');
-    if (input.reloadEdge && canReload && inst.def.magazine > 0) {
+    if (input.reloadEdge && canReload && inst.def.magazine > 0 && !isMelee) {
       if (inst.ammoMag < inst.def.magazine && inst.ammoReserve > 0) {
         inst.state = 'reloading';
         inst.stateUntilMs = nowMs + inst.def.reloadMs;
+        // Reloading unscopes — both because the animation hides the scope
+        // optic and so the player can see the world while reloading.
+        if (inst.scopeLevel > 0) inst.scopeLevel = 0;
         events.emit('combat:reload', { shooterId: shooter.id, weapon: inst.def.id, tMs: nowMs });
-        return false;
+        return 'none';
       }
     }
 
     // 4) Fire if allowed.
-    const canFire = inst.state === 'ready' && inst.ammoMag > 0;
-    if (!canFire) return false;
+    const canFire = inst.state === 'ready' && (isMelee || inst.ammoMag > 0);
+    if (!canFire) return 'none';
 
-    const fireIntervalMs = 60_000 / inst.def.rpm;
-    if (nowMs - inst.lastFireMs < fireIntervalMs) return false;
-
+    // Decide which attack — primary (LMB) or melee secondary (RMB) —
+    // and pick the matching rate cap + damage multiplier. RMB only does
+    // anything when the weapon defines a `secondaryAttack`.
     const fireMode = inst.def.fireMode;
+    const secondary = isMelee && inst.def.secondaryAttack && input.secondaryEdge === true;
+    const secondaryDef = secondary ? inst.def.secondaryAttack! : null;
+    const fireIntervalMs = 60_000 / (secondaryDef?.rpm ?? inst.def.rpm);
+    if (nowMs - inst.lastFireMs < fireIntervalMs) return 'none';
+
     let shouldFire = false;
-    if (fireMode === 'auto') shouldFire = input.triggerHeld;
+    if (secondary) shouldFire = true;
+    else if (fireMode === 'auto') shouldFire = input.triggerHeld;
     else if (fireMode === 'semi') shouldFire = input.triggerEdge;
     else if (fireMode === 'bolt') shouldFire = input.triggerEdge;
     else if (fireMode === 'burst') shouldFire = input.triggerEdge;
-    else if (fireMode === 'melee') shouldFire = input.triggerEdge; // simplified
+    else if (fireMode === 'melee') shouldFire = input.triggerEdge;
 
-    if (!shouldFire) return false;
+    if (!shouldFire) return 'none';
 
-    // Compute inaccuracy at fire time.
-    const inacc = computeInaccuracy(inst.def, {
+    // Compute inaccuracy at fire time. A scoped weapon trades movement for
+    // pinpoint precision — apply the configured multiplier when active.
+    let inacc = computeInaccuracy(inst.def, {
       speed: shooter.speed,
       inAir: shooter.inAir,
       crouching: shooter.crouching,
     });
+    if (inst.scopeLevel > 0 && inst.def.scopedInaccuracyMul !== undefined) {
+      inacc *= inst.def.scopedInaccuracyMul;
+    }
 
     const result = this.combat.fire({
       ox: aim.ox, oy: aim.oy, oz: aim.oz,
@@ -108,6 +132,7 @@ export class FiringController {
       weapon: inst.def,
       sprayIndex: inst.sprayIndex,
       inaccuracyDeg: inacc,
+      damageMul: secondaryDef?.damageMul ?? 1,
     });
     void result; // visuals consume events
 
@@ -118,19 +143,29 @@ export class FiringController {
       sprayIndex: inst.sprayIndex,
       tMs: nowMs,
     });
-    events.emit('combat:tracer', {
-      sx: aim.ox, sy: aim.oy, sz: aim.oz,
-      ex: result.endX, ey: result.endY, ez: result.endZ,
-      tMs: nowMs,
-    });
+    // Tracers are bullets — skip for melee swings.
+    if (!isMelee) {
+      events.emit('combat:tracer', {
+        sx: aim.ox, sy: aim.oy, sz: aim.oz,
+        ex: result.endX, ey: result.endY, ez: result.endZ,
+        tMs: nowMs,
+      });
+    }
 
     // Update state.
-    inst.ammoMag -= 1;
     inst.lastFireMs = nowMs;
     inst.sprayIndex += 1;
-    if (inst.ammoMag <= 0) {
-      inst.state = 'empty';
+    if (!isMelee) {
+      inst.ammoMag -= 1;
+      if (inst.ammoMag <= 0) {
+        inst.state = 'empty';
+      }
     }
-    return true;
+    // Firing a scoped weapon drops scope so the next shot uses normal aim
+    // and the view model returns. CS:GO behavior for sniper rifles.
+    if (inst.scopeLevel > 0) {
+      inst.scopeLevel = 0;
+    }
+    return secondary ? 'secondary' : 'primary';
   }
 }

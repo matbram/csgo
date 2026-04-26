@@ -15,6 +15,11 @@ import { HALF_PI } from '../util/math';
 import type { CharacterController } from './controller';
 
 const PITCH_LIMIT = HALF_PI - 0.02;
+/** Default vertical FOV in radians (~80°). Restored when no scope is active. */
+const DEFAULT_FOV_RAD = 1.40;
+/** Mouse sensitivity scale at default FOV. We scale sensitivity with FOV
+ *  so the screen-relative motion under a scope still feels deliberate. */
+const BASE_SENS_AT_DEFAULT_FOV = 0.0022;
 
 export class FpsCamera {
   readonly camera: UniversalCamera;
@@ -24,6 +29,9 @@ export class FpsCamera {
   /** Smoothed view bob offset components for a clean reset to zero. */
   private bobOffsetY = 0;
   private bobOffsetX = 0;
+  /** Target vertical FOV (radians). The camera lerps toward this each render
+   *  frame for a smooth scope transition. */
+  private targetFovRad = DEFAULT_FOV_RAD;
 
   constructor(player: CharacterController) {
     this.player = player;
@@ -31,12 +39,27 @@ export class FpsCamera {
     this.camera = new UniversalCamera('fps-camera', new Vector3(0, 0, 0), scene);
     this.camera.minZ = 0.05;
     this.camera.maxZ = 350;
-    this.camera.fov = 1.40;       // ~80° vertical
+    this.camera.fov = DEFAULT_FOV_RAD;
     this.camera.inertia = 0;       // no Babylon-driven smoothing
     this.camera.angularSensibility = 1;
     // Disable Babylon's built-in input controllers — we drive yaw/pitch ourselves.
     this.camera.inputs.clear();
     scene.activeCamera = this.camera;
+  }
+
+  /** Set the target vertical FOV in radians. The camera converges over a
+   *  few frames so transitions don't snap. */
+  setTargetFovRad(fovRad: number): void {
+    this.targetFovRad = fovRad;
+  }
+
+  /** Reset target FOV to the default. */
+  resetFov(): void {
+    this.targetFovRad = DEFAULT_FOV_RAD;
+  }
+
+  get defaultFovRad(): number {
+    return DEFAULT_FOV_RAD;
   }
 
   /** Apply mouse delta to player yaw/pitch. Called from a sim tick so the
@@ -49,7 +72,10 @@ export class FpsCamera {
     }
     const { dx, dy } = input.consumeMouseDelta();
     if (dx === 0 && dy === 0) return;
-    const sens = input.sensitivity;
+    // Scale mouse sensitivity with the current FOV so a scoped weapon
+    // doesn't whip past the target. Use the actual camera FOV (after
+    // smoothing) so the feel matches what the player sees.
+    const sens = input.sensitivity * (this.camera.fov / DEFAULT_FOV_RAD);
     this.player.state.yaw += dx * sens;
     // Wrap yaw to keep the value bounded.
     if (this.player.state.yaw > Math.PI) this.player.state.yaw -= Math.PI * 2;
@@ -96,6 +122,12 @@ export class FpsCamera {
     this.camera.rotation.x = -s.pitch;
     // No roll for FPS.
     this.camera.rotation.z = 0;
+
+    // Lerp toward target FOV. A short half-life feels snappy while still
+    // hiding the snap of an instant zoom — CS:GO's scope is near-instant.
+    const dt = time.renderDtMs;
+    const fovK = 1 - Math.exp(-dt / 35);
+    this.camera.fov += (this.targetFovRad - this.camera.fov) * fovK;
   }
 
   /** Forward unit vector for the player based on current yaw (no pitch). */

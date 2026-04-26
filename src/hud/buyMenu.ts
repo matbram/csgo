@@ -20,6 +20,9 @@ export interface BuyContext {
   hasKit: boolean;
   hasPrimary: WeaponId | null;
   hasSecondary: WeaponId | null;
+  /** Per-grenade counts so the buy tiles can show "x1 / x2" and grey
+   *  out when the carry cap is reached. */
+  grenades: { he: number; flashbang: number; smoke: number; molotov: number; decoy: number; total: number };
 }
 
 export interface PurchaseRequest {
@@ -107,6 +110,7 @@ export class BuyMenu {
     const groups: Array<{ title: string; items: BuyItem[] }> = [
       { title: 'Pistols', items: pistolItems(ctx) },
       { title: 'Rifles & Sniper', items: rifleItems(ctx) },
+      { title: 'Grenades', items: grenadeItems(ctx) },
       { title: 'Equipment', items: equipmentItems(ctx) },
     ];
 
@@ -161,6 +165,7 @@ function hashCtx(c: BuyContext): string {
     c.side, c.money, c.inBuyZone ? 1 : 0, c.buyPhase ? 1 : 0,
     c.helmet ? 1 : 0, c.armor, c.hasKit ? 1 : 0,
     c.hasPrimary ?? '-', c.hasSecondary ?? '-',
+    c.grenades.he, c.grenades.flashbang, c.grenades.smoke, c.grenades.molotov, c.grenades.decoy,
   ].join('|');
 }
 
@@ -203,6 +208,37 @@ function pistolItems(ctx: BuyContext): BuyItem[] {
 function rifleItems(ctx: BuyContext): BuyItem[] {
   return (['ak47', 'm4a4', 'awp'] as WeaponId[])
     .map(id => buyItem(WEAPONS[id], ctx));
+}
+
+function grenadeItems(ctx: BuyContext): BuyItem[] {
+  const out: BuyItem[] = [];
+  const kinds: Array<{ id: 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy'; cap: number }> = [
+    { id: 'he', cap: 1 },
+    { id: 'flashbang', cap: 2 },
+    { id: 'smoke', cap: 1 },
+    { id: 'molotov', cap: 1 },
+    { id: 'decoy', cap: 1 },
+  ];
+  const hitTotal = ctx.grenades.total >= 4;
+  for (const k of kinds) {
+    const def = WEAPONS[k.id];
+    const owned = ctx.grenades[k.id];
+    const atKindCap = owned >= k.cap;
+    const affordable = ctx.money >= def.cost;
+    const eligibleSide = eligible(def, ctx);
+    const note = !eligibleSide ? 'Not available on your side' :
+      atKindCap ? `Carry cap (x${k.cap})` :
+      hitTotal ? 'Carry cap (4 total)' :
+      !affordable ? `Need $${def.cost - ctx.money} more` : '';
+    const labelSuffix = owned > 0 ? `  ×${owned}` : '';
+    out.push({
+      id: def.id, label: def.displayName + labelSuffix, cost: def.cost,
+      available: eligibleSide && affordable && !atKindCap && !hitTotal,
+      note,
+      req: { kind: 'weapon', weapon: def.id },
+    });
+  }
+  return out;
 }
 
 function equipmentItems(ctx: BuyContext): BuyItem[] {

@@ -33,6 +33,10 @@ export interface Character {
   speed: number;
   inAir: boolean;
   crouching: boolean;
+  /** Sim ms at which this character's flash blindness clears. Past
+   *  values mean "not flashed". Both the local player overlay and the
+   *  bot perception flash-degrade hook off this. */
+  flashedUntilMs?: number;
 }
 
 export function hitboxPose(c: Character): HitboxPose {

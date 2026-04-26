@@ -3,7 +3,7 @@
  *
  *  Each entity is a Character record. The local player's character is
  *  shared with the kinematic CharacterController. Bot/dummy characters
- *  drive a humanoid mesh through `syncDummy()`.
+ *  drive a humanoid mesh through the bot's render sync.
  *
  *  At round start we:
  *    1. Reset HP=100, alive=true, helmet/armor/kit per their loadout.
@@ -12,8 +12,9 @@
  *       gear (carry-over rule: alive players keep their gear; dead
  *       players reset to default).
  *
- *  M3 simplification: dummy bots can't move, so they always reset to
- *  default. Only the local player benefits from carry-over. */
+ *  In M4 bots reset to the default loadout each round just like the local
+ *  player would on death. Carry-over for surviving bots will follow when
+ *  the strategist decides between full-buy and save in M5. */
 
 import type { Character } from '../entities/character';
 import type { World, Spawn } from '../map/world';
@@ -44,6 +45,7 @@ export function resetCharacterForRound(
   c.crouching = false;
   c.inAir = false;
   c.speed = 0;
+  c.flashedUntilMs = 0;
   // Currently-armor and helmet are persistent goods — they're consumed
   // by damage, so we don't reset them. New round: keep what survived.
   // If the player died, the natural CS:GO behavior is they respawn fresh
@@ -69,6 +71,7 @@ function refillInventory(inv: Inventory): void {
     i.stateUntilMs = 0;
     i.lastFireMs = -Infinity;
     i.sprayIndex = 0;
+    i.scopeLevel = 0;
   };
   if (inv.primary) refill(inv.primary);
   if (inv.secondary) refill(inv.secondary);
@@ -87,14 +90,19 @@ export function pickSpawns(world: World, side: Side, count: number): Spawn[] {
   return out;
 }
 
-/** Reset ALL characters for the round start. The local player gets
- *  carry-over (if they were alive at round end). */
+/** Reset ALL characters for the round start. Anyone in `survivors` keeps
+ *  their loadout (CS:GO behaviour); everyone else respawns fresh with
+ *  the default side pistol + knife.
+ *
+ *  Callers should snapshot `c.alive` for each character BEFORE calling
+ *  `resetCharacterForRound` (which sets alive = true), then pass the
+ *  survivor ids through. */
 export function resetRoster(
   characters: Character[],
   localPlayer: LocalPlayer,
   world: World,
   match: { players: { get(id: string): { currentSide: Side } | undefined } },
-  localSurvived: boolean,
+  survivors: ReadonlySet<string>,
 ): void {
   const tList: Character[] = [];
   const ctList: Character[] = [];
@@ -111,14 +119,12 @@ export function resetRoster(
   for (let i = 0; i < tList.length; i++) {
     const c = tList[i]!;
     const spawn = tSpawns[i] ?? tSpawns[0]!;
-    const isLocalAlive = c.id === 'local' && localSurvived;
-    resetCharacterForRound(c, 'T', spawn, { keepInventory: isLocalAlive });
+    resetCharacterForRound(c, 'T', spawn, { keepInventory: survivors.has(c.id) });
   }
   for (let i = 0; i < ctList.length; i++) {
     const c = ctList[i]!;
     const spawn = ctSpawns[i] ?? ctSpawns[0]!;
-    const isLocalAlive = c.id === 'local' && localSurvived;
-    resetCharacterForRound(c, 'CT', spawn, { keepInventory: isLocalAlive });
+    resetCharacterForRound(c, 'CT', spawn, { keepInventory: survivors.has(c.id) });
   }
 
   // Sync the local controller to the new spawn position/yaw.

@@ -7,11 +7,12 @@
  *  and falloff. */
 
 export type WeaponId =
-  | 'ak47' | 'm4a4' | 'usp_s' | 'glock18' | 'awp' | 'knife' | 'c4';
+  | 'ak47' | 'm4a4' | 'usp_s' | 'glock18' | 'awp' | 'knife' | 'c4'
+  | 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';
 
 export type WeaponSlot = 'primary' | 'secondary' | 'knife' | 'grenade' | 'c4';
-export type WeaponCategory = 'rifle' | 'smg' | 'pistol' | 'sniper' | 'shotgun' | 'lmg' | 'knife' | 'bomb';
-export type FireMode = 'auto' | 'semi' | 'burst' | 'bolt' | 'melee' | 'planted';
+export type WeaponCategory = 'rifle' | 'smg' | 'pistol' | 'sniper' | 'shotgun' | 'lmg' | 'knife' | 'bomb' | 'grenade';
+export type FireMode = 'auto' | 'semi' | 'burst' | 'bolt' | 'melee' | 'planted' | 'thrown';
 export type WeaponTeam = 'T' | 'CT' | 'both';
 
 export interface WeaponDef {
@@ -57,6 +58,28 @@ export interface WeaponDef {
   /** Sound IDs (used by audio module). */
   fireSound: string;
   reloadSound: string;
+  /** Number of scope zoom levels (0 = no scope). For the AWP this is 2:
+   *  one mid-zoom and one tight zoom, cycling 0→1→2→0 on RMB. */
+  scopeLevels?: number;
+  /** Camera vertical FOV (degrees) per scope level. Index 0 corresponds
+   *  to scopeLevel=1, index 1 to scopeLevel=2, etc. Required when
+   *  `scopeLevels > 0`. */
+  scopeFovDeg?: ReadonlyArray<number>;
+  /** Inaccuracy multiplier while scoped (any level). 0..1. */
+  scopedInaccuracyMul?: number;
+  /** Movement speed scale while scoped (any level). Replaces moveSpeedScale. */
+  scopedMoveSpeedScale?: number;
+  /** Optional alternate fire (RMB) for melee weapons: a heavier, slower
+   *  attack. The base attack stays on LMB and uses the top-level rpm /
+   *  baseDamage / falloff fields. */
+  secondaryAttack?: {
+    /** Damage multiplier applied on top of baseDamage. */
+    damageMul: number;
+    /** Rate cap for the secondary attack (rounds per minute). */
+    rpm: number;
+    /** Hint for the view model — selects the right animation curve. */
+    animation: 'stab';
+  };
 }
 
 /** AK-47 spray pattern (degrees). Approximation of the real pattern:
@@ -290,6 +313,10 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     killReward: 100,
     fireSound: 'awp_fire',
     reloadSound: 'awp_reload',
+    scopeLevels: 2,
+    scopeFovDeg: [40, 10],
+    scopedInaccuracyMul: 0.05,
+    scopedMoveSpeedScale: 0.30,
   },
   knife: {
     id: 'knife',
@@ -319,6 +346,11 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     killReward: 1500,
     fireSound: 'knife_swing',
     reloadSound: 'knife_swing',
+    secondaryAttack: {
+      damageMul: 1.55,    // 65 → ~101 chest, no-armor
+      rpm: 50,            // ~1.2 s between stabs
+      animation: 'stab',
+    },
   },
   c4: {
     id: 'c4',
@@ -349,7 +381,69 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     fireSound: 'c4_beep',
     reloadSound: 'c4_beep',
   },
+  he: makeGrenadeDef({
+    id: 'he', displayName: 'HE Grenade', cost: 300, killReward: 300,
+    fireSound: 'grenade_throw',
+  }),
+  flashbang: makeGrenadeDef({
+    id: 'flashbang', displayName: 'Flashbang', cost: 200, killReward: 0,
+    fireSound: 'grenade_throw',
+  }),
+  smoke: makeGrenadeDef({
+    id: 'smoke', displayName: 'Smoke', cost: 300, killReward: 0,
+    fireSound: 'grenade_throw',
+  }),
+  molotov: makeGrenadeDef({
+    id: 'molotov', displayName: 'Molotov', cost: 400, killReward: 100,
+    fireSound: 'grenade_throw',
+  }),
+  decoy: makeGrenadeDef({
+    id: 'decoy', displayName: 'Decoy', cost: 50, killReward: 0,
+    fireSound: 'grenade_throw',
+  }),
 };
+
+interface GrenadeFactoryArgs {
+  id: 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';
+  displayName: string;
+  cost: number;
+  killReward: number;
+  fireSound: string;
+}
+function makeGrenadeDef(a: GrenadeFactoryArgs): WeaponDef {
+  return {
+    id: a.id,
+    displayName: a.displayName,
+    slot: 'grenade',
+    category: 'grenade',
+    team: 'both',
+    cost: a.cost,
+    fireMode: 'thrown',
+    rpm: 0,
+    // Grenades use ammoMag = "in your hand" (1) and ammoReserve = 0:
+    // each instance is a single grenade. Multiple instances stack in
+    // the inventory's grenade slot.
+    magazine: 1,
+    reserve: 0,
+    reloadMs: 0,
+    deployMs: 250,
+    baseDamage: 0,
+    armorPenetration: 0,
+    falloffStartM: 0,
+    falloffRangeM: 0,
+    baseInaccuracyDeg: 0,
+    movingInaccuracyMul: 1,
+    jumpingInaccuracyMul: 1,
+    crouchInaccuracyMul: 1,
+    recoilDecayMs: 0,
+    sprayPattern: [[0, 0]],
+    cameraKickDeg: { x: 0, y: 0 },
+    moveSpeedScale: 1.0,
+    killReward: a.killReward,
+    fireSound: a.fireSound,
+    reloadSound: a.fireSound,
+  };
+}
 
 export function getWeapon(id: WeaponId): WeaponDef {
   const w = WEAPONS[id];

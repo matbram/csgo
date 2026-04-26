@@ -7,7 +7,7 @@
  *    4.  Local controller + camera + post-FX
  *    5.  Local player wrapper + view model
  *    6.  Combat + audio + visuals
- *    7.  Roster (4 T dummies + 5 CT dummies + local)
+ *    7.  Roster (4 T bots + 5 CT bots + local)
  *    8.  Match state, HUDs (round, combat, scoreboard, buy menu)
  *    9.  Input
  *   10.  Loop
@@ -17,6 +17,7 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { createEngine, getEngine, getScene } from './engine/scene';
 import { createLighting } from './engine/lighting';
 import { createPostFx } from './engine/postfx';
+import { adaptiveQuality } from './engine/adaptiveQuality';
 import { input } from './engine/input';
 import { loop } from './engine/loop';
 import { time } from './engine/time';
@@ -27,17 +28,32 @@ import { CharacterController, DEFAULT_TUNABLES } from './player/controller';
 import { WorldQuery } from './player/physics';
 import { FpsCamera } from './player/fpsCamera';
 import { StartOverlay, ensureCrosshair } from './hud/overlay';
+import { SettingsHud } from './hud/settingsHud';
+import { settings } from './engine/settings';
 import { DebugHud } from './hud/debugHud';
 import { LocalPlayer } from './player/localPlayer';
 import { ViewModel } from './player/viewModel';
 import { CombatSystem } from './combat/combat';
 import { FiringController } from './combat/firing';
-import { activeInstance, switchTo, makeInstance } from './weapons/inventory';
+import { activeInstance, switchTo, makeInstance, cycleScope, nextScrollSlot, consumeActiveGrenade } from './weapons/inventory';
+import { runBotBuy } from './ai/buy';
 import type { WeaponInstance } from './weapons/inventory';
 import { installCombatVisuals } from './combat/visuals';
 import { installAudio, ensureAudioContext, setListenerPose, playSound } from './audio/audio';
 import { CombatHud } from './hud/combatHud';
-import { createDummy, syncDummy, type Dummy } from './entities/dummy';
+import { ScopeHud } from './hud/scopeHud';
+import { AiDebugHud } from './hud/aiDebug';
+import { FlashOverlay } from './hud/flashOverlay';
+import { SpectatorHud } from './hud/spectatorHud';
+import { MatchEndHud } from './hud/matchEndHud';
+import { Spectator } from './player/spectator';
+import { GrenadeSystem } from './grenades/system';
+import { installGrenadeVisuals } from './grenades/visuals';
+import { createBot, snapBotToCharacterPose, setBotObjective, stepBot, syncBotMesh, type Bot } from './entities/bot';
+import { NavGrid } from './nav/grid';
+import { PathService } from './nav/pathService';
+import { makeBlackboard, aggregateKnown, refreshTeamRoster, aliveCount } from './ai/blackboard';
+import { planRoundStart, reactToBombPlanted } from './ai/strategist';
 import type { Character } from './entities/character';
 import { pointInPolygon2D } from './map/world';
 import { makeMatch, beginRound, endRound, applyHalftime, stepMatch, type MatchState } from './match/match';
@@ -84,6 +100,7 @@ function bootstrap(): void {
   controller.snapToGround();
   const fps = new FpsCamera(controller);
   createPostFx(fps.camera);
+  adaptiveQuality.start();
 
   // 5) Local player + view model
   const localPlayer = new LocalPlayer(controller, 'T');
@@ -92,30 +109,67 @@ function bootstrap(): void {
 
   // 6) Combat + audio + visuals
   const characters: Character[] = [localPlayer.character];
-  const combatSystem = new CombatSystem(query, () => characters);
+  // Grenade system + smoke field. The smoke field doubles as a vision
+  // occluder for combat hits and bot perception, so we instantiate it
+  // BEFORE the combat system / before bot brains tick.
+  const grenadeSystem = new GrenadeSystem(world, query, () => characters);
+  const combatSystem = new CombatSystem(query, () => characters, grenadeSystem.smoke);
   const firing = new FiringController(combatSystem);
   installAudio();
   installCombatVisuals();
+  installGrenadeVisuals(grenadeSystem);
 
-  // 7) Roster: 4 more T dummies (teammates), 5 CT dummies (enemies).
-  const dummies: Dummy[] = [];
-  let dummyIdx = 0;
+  // 6.5) Nav grid + path service. Built once at boot — Dust 2 is static
+  // and the grid is small enough to bake synchronously (<200 ms).
+  const navGrid = NavGrid.build(world, query);
+  const pathService = new PathService(navGrid, { maxRequestsPerFrame: 2, cacheSize: 32 });
+
+  // 7) Roster: 4 T bots (teammates of local), 5 CT bots (enemies).
+  const bots: Bot[] = [];
   for (let i = 0; i < 4; i++) {
     const sp = tSpawns[(i + 1) % Math.max(1, tSpawns.length)] ?? startSpawn!;
-    const d = createDummy('T', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw);
-    d.character.id = `t-bot-${++dummyIdx}`;
-    dummies.push(d);
-    characters.push(d.character);
+    const bot = createBot('T', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, {
+      id: `t-bot-${i + 1}`,
+      teamIndex: i,
+      difficulty: settings.get().difficulty,
+    });
+    bots.push(bot);
+    characters.push(bot.character);
   }
   const ctSpawns = world.spawnsForTeam('CT');
   for (let i = 0; i < 5; i++) {
     const sp = ctSpawns[i % Math.max(1, ctSpawns.length)] ?? ctSpawns[0]!;
     if (!sp) throw new Error('No CT spawns authored');
-    const d = createDummy('CT', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw);
-    d.character.id = `ct-bot-${i + 1}`;
-    dummies.push(d);
-    characters.push(d.character);
+    const bot = createBot('CT', sp.pos.x, sp.pos.y, sp.pos.z, sp.yaw, query, {
+      id: `ct-bot-${i + 1}`,
+      teamIndex: i,
+      difficulty: settings.get().difficulty,
+    });
+    bots.push(bot);
+    characters.push(bot.character);
   }
+
+  // 7.5) Per-team blackboards. The strategist writes plans into these
+  // each round; bot brains read objectives + role + shared intel from
+  // them every tick. The local player belongs to the T side after the
+  // halftime swap may flip — we don't mutate the local player's brain
+  // (they don't have one) but we still let them be tracked as alive in
+  // the T blackboard so the bot save heuristic counts correctly.
+  const tBoard = makeBlackboard('T');
+  const ctBoard = makeBlackboard('CT');
+
+  // Compute spawn centroids once — used by the bot Save state to pick
+  // a retreat target. Spawn polygons aren't authored separately, so we
+  // average the spawn points for each team.
+  const spawnCentroid = (side: 'T' | 'CT'): { x: number; z: number } => {
+    const sps = world.spawnsForTeam(side);
+    if (sps.length === 0) return { x: 0, z: side === 'T' ? -38 : 28 };
+    let sx = 0, sz = 0;
+    for (const s of sps) { sx += s.pos.x; sz += s.pos.z; }
+    return { x: sx / sps.length, z: sz / sps.length };
+  };
+  const tSpawnCentroid = spawnCentroid('T');
+  const ctSpawnCentroid = spawnCentroid('CT');
 
   // 8) Match state
   let match: MatchState = makeMatch({
@@ -128,8 +182,15 @@ function bootstrap(): void {
 
   // HUDs
   ensureCrosshair();
+  const settingsHud = new SettingsHud(hudRoot);
   const debugHud = new DebugHud(controller, world);
   const combatHud = new CombatHud();
+  const scopeHud = new ScopeHud();
+  const aiDebugHud = new AiDebugHud();
+  const flashOverlay = new FlashOverlay();
+  const spectatorHud = new SpectatorHud();
+  const matchEndHud = new MatchEndHud();
+  const spectator = new Spectator();
   const roundHud = new RoundHud(hudRoot);
   const scoreboard = new Scoreboard(hudRoot);
   const c4Entity = new C4Entity();
@@ -154,6 +215,10 @@ function bootstrap(): void {
   // Round-end → next round transition handled in sim loop.
   let roundEndApplied = false;
   let lastRoundNumber = 0;
+  // Sim ms when the current round entered live phase (post-freeze).
+  // Used by the bot brain's grenade-lineup trigger windows.
+  let liveStartedAtMs = 0;
+  let lastSeenPhase: 'freeze' | 'live' | 'end' | null = null;
 
   // Track local-player kills/deaths for scoreboard + economy.
   events.on('combat:kill', ({ attackerId, victimId, weapon }) => {
@@ -166,26 +231,182 @@ function bootstrap(): void {
     if (vic) vic.deaths += 1;
   });
 
+  // Bomb plant → both strategists re-plan: T defends the planted site,
+  // CT swings into a retake formation. The bot brains pick up the new
+  // objectives via the per-tick blackboard read.
+  events.on('match:bombPlanted', () => {
+    const bombInfo = mirrorBomb(match.round?.bomb);
+    if (bombInfo.site && bombInfo.pos) {
+      reactToBombPlanted(tBoard, bots, bombInfo, world, navGrid, time.simMs);
+      reactToBombPlanted(ctBoard, bots, bombInfo, world, navGrid, time.simMs);
+    }
+  });
+
+  // Gunshot → sound perception. Every bot on the opposing team within
+  // hearing range gets a 'sound' confidence ping at the shooter's
+  // position. Bots already in 'visible' state on the same shooter keep
+  // their higher-confidence intel — `reportSound` won't downgrade.
+  const HEARING_RANGE_M = 35;
+  events.on('combat:fire', ({ shooterId, ox, oy, oz, tMs }) => {
+    const shooter = characters.find(c => c.id === shooterId);
+    if (!shooter) return;
+    for (const bot of bots) {
+      if (!bot.character.alive) continue;
+      if (bot.character.team === shooter.team) continue;
+      const dx = bot.character.pos.x - ox;
+      const dz = bot.character.pos.z - oz;
+      if (dx * dx + dz * dz > HEARING_RANGE_M * HEARING_RANGE_M) continue;
+      bot.perception.reportSound(shooterId, ox, oy, oz, tMs);
+    }
+  });
+
   // 9) Input
   canvas.addEventListener('click', () => ensureAudioContext());
   input.attach(canvas);
 
+  // After each roster reset we re-snap every bot to its new spawn pose
+  // (the controller state doesn't follow the Character record on its own)
+  // and hand out fresh objectives. Path requests are deferred to the
+  // first sim tick so the path service's per-frame budget applies.
+  const refreshBotsForNewRound = (): void => {
+    if (!match.round) return;
+    // Drop any in-flight grenades / smokes / fire patches from the
+    // previous round — none of that should bleed into the new round.
+    grenadeSystem.reset();
+    const tBots: Bot[] = [];
+    const ctBots: Bot[] = [];
+    for (const bot of bots) {
+      snapBotToCharacterPose(bot);
+      // Run each bot's buy plan once the new round's loadout is settled.
+      // Bots that survived already have their primary thanks to the
+      // roster's carry-over rule, so runBotBuy is a no-op for them
+      // beyond a possible armor top-up.
+      const slot = match.players.get(bot.id);
+      if (slot) runBotBuy(slot, bot.character);
+      if (bot.character.team === 'T') tBots.push(bot);
+      else ctBots.push(bot);
+    }
+    // Strategists pick a plan, assign roles, write objectives. Bots then
+    // pull their objective from their team's blackboard. Pass navGrid so
+    // each plan slot's callout centroid gets snapped to a walkable cell
+    // before storing — otherwise a centroid in a wall column strands the
+    // assigned bot at spawn.
+    const round = match.round.number;
+    planRoundStart(tBoard, tBots, match.players, world, navGrid, round, time.simMs);
+    planRoundStart(ctBoard, ctBots, match.players, world, navGrid, round, time.simMs);
+    applyBlackboardObjectives(tBoard, tBots);
+    applyBlackboardObjectives(ctBoard, ctBots);
+  };
+
+  const applyBlackboardObjectives = (
+    bb: ReturnType<typeof makeBlackboard>,
+    teamBots: Bot[],
+  ): void => {
+    for (const bot of teamBots) {
+      const obj = bb.objectiveByBot.get(bot.id);
+      if (!obj) continue;
+      setBotObjective(bot, obj.x, obj.z);
+    }
+  };
+
+  /** Per-tick helper: keep `bot.objective` in sync with the strategist's
+   *  current assignment, except when the brain is in Save mode — then
+   *  the retreat target wins. We re-apply on every tick so a state
+   *  transition out of Save automatically restores the team plan
+   *  without a separate "exit save" hook. */
+  const applyBotObjectiveFromBoard = (
+    bot: Bot,
+    bb: ReturnType<typeof makeBlackboard>,
+    spawnPos: { x: number; z: number },
+  ): void => {
+    if (bot.brain.state === 'save') {
+      // Retreat to spawn. setBotObjective is idempotent if the target
+      // matches — but it clears the path each call, so guard on a small
+      // epsilon to avoid replanning every frame.
+      const cur = bot.objective;
+      if (!cur || Math.abs(cur.x - spawnPos.x) > 0.5 || Math.abs(cur.z - spawnPos.z) > 0.5) {
+        setBotObjective(bot, spawnPos.x, spawnPos.z);
+      }
+      return;
+    }
+    const obj = bb.objectiveByBot.get(bot.id);
+    if (!obj) return;
+    const cur = bot.objective;
+    if (!cur || Math.abs(cur.x - obj.x) > 0.5 || Math.abs(cur.z - obj.z) > 0.5) {
+      setBotObjective(bot, obj.x, obj.z);
+    }
+  };
+
+  /** Adapt the match's BombState into the blackboard's BombInfo shape.
+   *  Returns the "no bomb" sentinel when there's no live bomb state. */
+  const mirrorBomb = (b: import('./match/bomb').BombState | null | undefined): import('./ai/blackboard').BombInfo => {
+    if (!b) return { phase: 'carried', carrierId: null, site: null, pos: null };
+    return { phase: b.phase, carrierId: b.carrierId, site: b.site, pos: b.pos };
+  };
+
+  const buyMenuCtx = (
+    slot: import('./match/match').MatchPlayerSlot,
+    inBuyZone: boolean,
+    buyPhase: boolean,
+  ): import('./hud/buyMenu').BuyContext => {
+    const inv = localPlayer.character.inventory;
+    const grenades = { he: 0, flashbang: 0, smoke: 0, molotov: 0, decoy: 0, total: 0 };
+    if (inv) {
+      for (const g of inv.grenades) {
+        if (g.def.id === 'he' || g.def.id === 'flashbang' || g.def.id === 'smoke' || g.def.id === 'molotov' || g.def.id === 'decoy') {
+          grenades[g.def.id] += 1;
+        }
+      }
+      grenades.total = inv.grenades.length;
+    }
+    return {
+      side: slot.currentSide,
+      money: slot.money,
+      inBuyZone, buyPhase,
+      helmet: localPlayer.character.helmet,
+      armor: localPlayer.character.armor,
+      hasKit: localPlayer.character.hasKit,
+      hasPrimary: inv?.primary?.def.id ?? null,
+      hasSecondary: inv?.secondary?.def.id ?? null,
+      grenades,
+    };
+  };
+
+
+  /** Capture every alive character id BEFORE resetCharacterForRound flips
+   *  alive back to true, so resetRoster can carry over the surviving
+   *  loadouts. The local player is always treated as a survivor on the
+   *  very first round (they spawn alive with their default kit). */
+  const snapshotSurvivors = (alwaysIncludeLocal = false): Set<string> => {
+    const out = new Set<string>();
+    for (const c of characters) {
+      if (c.alive) out.add(c.id);
+    }
+    if (alwaysIncludeLocal) out.add('local');
+    return out;
+  };
+
   // First round. Reset everyone first so beginRound's carrier pick sees
   // alive characters; then begin the round; then assign the C4 to the carrier.
-  resetRoster(characters, localPlayer, world, match, /* localSurvived */ true);
+  resetRoster(characters, localPlayer, world, match, snapshotSurvivors(/* alwaysIncludeLocal */ true));
   match = beginRound(match, time.simMs, characters);
   if (match.round?.bomb?.carrierId) {
     assignBomb(characters, match.round.bomb.carrierId);
   }
-  events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
-  lastRoundNumber = match.round!.number;
+  refreshBotsForNewRound();
+  if (match.round) {
+    events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
+    lastRoundNumber = match.round.number;
+  }
 
   // ---- Sim systems ----
   loop.registerSim((dtMs) => {
     const nowMs = time.simMs + dtMs; // step time updates AFTER sim systems run, so use computed
+    pathService.beginFrame();
     fps.applyMouseLook();
 
     if (input.wasPressed('F3')) debugHud.toggle();
+    if (input.wasPressed('F4')) aiDebugHud.toggle();
 
     // Tab → scoreboard. Press / release edges; we also keep it sticky during round end.
     const tabHeld = input.isDown('Tab');
@@ -193,7 +414,7 @@ function bootstrap(): void {
 
     // Movement input (locked during freeze/end).
     let forward = 0, strafe = 0;
-    if (!isMovementLocked(match.round!) && input.pointerLocked && !buyMenu.isOpen()) {
+    if (!isMovementLocked(match.round) && input.pointerLocked && !buyMenu.isOpen()) {
       if (input.isDown('KeyW')) forward += 1;
       if (input.isDown('KeyS')) forward -= 1;
       if (input.isDown('KeyD')) strafe += 1;
@@ -204,11 +425,13 @@ function bootstrap(): void {
     const rX = Math.cos(yaw), rZ = -Math.sin(yaw);
 
     const inst = currentInstance(localPlayer);
-    const speedScale = inst?.def.moveSpeedScale ?? 1.0;
+    const speedScale = (inst && inst.scopeLevel > 0 && inst.def.scopedMoveSpeedScale !== undefined)
+      ? inst.def.scopedMoveSpeedScale
+      : (inst?.def.moveSpeedScale ?? 1.0);
     const wishX = fX * forward + rX * strafe;
     const wishZ = fZ * forward + rZ * strafe;
 
-    const movementLocked = isMovementLocked(match.round!);
+    const movementLocked = isMovementLocked(match.round);
     controller.step(dtMs, {
       wishX: movementLocked ? 0 : wishX,
       wishZ: movementLocked ? 0 : wishZ,
@@ -223,7 +446,7 @@ function bootstrap(): void {
     const slot = match.players.get('local');
     if (slot) {
       const inBuyZone = isInBuyZoneForLocal(localPlayer, match, world);
-      const buyPhase = isBuyPhase(match.round!, time.simMs);
+      const buyPhase = isBuyPhase(match.round, time.simMs);
       const allowBuy = inBuyZone && buyPhase && localPlayer.character.alive;
 
       if (input.wasPressed('KeyB')) {
@@ -231,47 +454,83 @@ function bootstrap(): void {
           buyMenu.close();
           input.requestPointerLock();
         } else if (allowBuy) {
-          buyMenu.open({
-            side: slot.currentSide,
-            money: slot.money,
-            inBuyZone, buyPhase,
-            helmet: localPlayer.character.helmet,
-            armor: localPlayer.character.armor,
-            hasKit: localPlayer.character.hasKit,
-            hasPrimary: localPlayer.character.inventory?.primary?.def.id ?? null,
-            hasSecondary: localPlayer.character.inventory?.secondary?.def.id ?? null,
-          });
+          buyMenu.open(buyMenuCtx(slot, inBuyZone, buyPhase));
           input.releasePointerLock();
         }
       }
-      if (input.wasPressed('Escape') && buyMenu.isOpen()) {
-        buyMenu.close();
-        input.requestPointerLock();
-      }
       // Refresh content / auto-close on lost eligibility.
       if (buyMenu.isOpen()) {
-        buyMenu.refresh({
-          side: slot.currentSide,
-          money: slot.money,
-          inBuyZone, buyPhase,
-          helmet: localPlayer.character.helmet,
-          armor: localPlayer.character.armor,
-          hasKit: localPlayer.character.hasKit,
-          hasPrimary: localPlayer.character.inventory?.primary?.def.id ?? null,
-          hasSecondary: localPlayer.character.inventory?.secondary?.def.id ?? null,
-        });
+        buyMenu.refresh(buyMenuCtx(slot, inBuyZone, buyPhase));
       }
     }
 
-    // Weapon switching.
+    // Esc opens (or closes) the settings menu. The buy menu wins
+    // priority — pressing Esc with the buy menu open just closes it.
+    // The browser releases pointer lock on Esc; consumeEscape() latches
+    // the edge so a delayed sim tick still sees it.
+    if (input.consumeEscape()) {
+      if (buyMenu.isOpen()) {
+        buyMenu.close();
+        input.requestPointerLock();
+      } else {
+        settingsHud.toggle();
+      }
+    }
+
+    // Weapon switching — number keys for direct slot access, scroll wheel
+    // to cycle through owned slots in primary→secondary→knife→c4 order.
+    // Always drain the wheel buffer, even when ineligible, so scroll
+    // motion during freeze/menu/dead doesn't queue up surprise switches.
     const invObj = localPlayer.character.inventory;
+    const wheelTicks = input.consumeWheelTicks();
+    const wheelEligible = !!invObj && !movementLocked && input.pointerLocked
+      && !buyMenu.isOpen() && localPlayer.character.alive;
     if (invObj && !movementLocked) {
       let switched = false;
       if (input.wasPressed('Digit1') && invObj.primary) switched = switchTo(invObj, 'primary', time.simMs);
       else if (input.wasPressed('Digit2') && invObj.secondary) switched = switchTo(invObj, 'secondary', time.simMs);
       else if (input.wasPressed('Digit3')) switched = switchTo(invObj, 'knife', time.simMs);
+      else if (input.wasPressed('Digit4') && invObj.grenades.length > 0) switched = switchTo(invObj, 'grenade', time.simMs);
       else if (input.wasPressed('Digit5') && invObj.c4) switched = switchTo(invObj, 'c4', time.simMs);
+      else if (wheelEligible && wheelTicks !== 0) {
+        // Each tick is one slot step. Wheel-down (positive) goes forward,
+        // wheel-up (negative) goes backward. Cap so a fling doesn't loop.
+        const dir: 1 | -1 = wheelTicks > 0 ? 1 : -1;
+        const steps = Math.min(Math.abs(wheelTicks), 4);
+        for (let i = 0; i < steps; i++) {
+          const target = nextScrollSlot(invObj, dir);
+          if (!target) break;
+          if (switchTo(invObj, target, time.simMs)) switched = true;
+        }
+      }
       if (switched) viewModel.setWeapon(activeInstance(invObj));
+    }
+
+    // RMB has two roles: scope toggle on scoped weapons, and the heavier
+    // attack on melee. The two are mutually exclusive — no weapon both
+    // scopes and stabs — so we dispatch on fire mode here. The melee path
+    // is consumed via `secondaryEdge` in `firing.step` below; the scope
+    // path runs immediately.
+    const rmbEdge = input.wasMousePressed(2);
+    const rmbAvailable = rmbEdge
+      && input.pointerLocked
+      && !buyMenu.isOpen()
+      && localPlayer.character.alive
+      && inst !== null;
+    if (rmbAvailable && inst && inst.def.fireMode !== 'melee' && (inst.def.scopeLevels ?? 0) > 0) {
+      cycleScope(inst);
+    }
+    // If the player died this tick (or any time their inventory is in a
+    // dead state), drop scope so the camera/HUD can return to default.
+    // Also intercept LMB/RMB while dead to drive spectator cycling — we
+    // run this BEFORE the firing block, which gates on `alive`, so the
+    // same edge isn't double-consumed as a misfire.
+    if (!localPlayer.character.alive && input.pointerLocked && !buyMenu.isOpen()) {
+      if (input.wasMousePressed(0)) spectator.next();
+      if (input.wasMousePressed(2)) spectator.prev();
+    }
+    if (!localPlayer.character.alive && inst && inst.scopeLevel > 0) {
+      inst.scopeLevel = 0;
     }
 
     // Firing — disabled during freeze/end and while buy menu open.
@@ -293,6 +552,36 @@ function bootstrap(): void {
       const fwdY = Math.sin(py);
       const fwdZ = Math.cos(yaw) * cosP;
 
+      // Grenades are thrown, not hitscan-fired. LMB = full throw, RMB =
+      // underhand. After a successful throw the consumed instance is
+      // popped; if no grenades remain we fall back to the player's
+      // primary or secondary so the next click does the expected thing.
+      if (activeInst.def.slot === 'grenade') {
+        // Grenades don't go through firing.step (which advances the
+        // 'deploying' → 'ready' transition for guns). Advance it
+        // inline so the throw can fire once the deploy timer elapses.
+        if (activeInst.state === 'deploying' && time.simMs >= activeInst.stateUntilMs) {
+          activeInst.state = 'ready';
+          activeInst.stateUntilMs = 0;
+        }
+        const lmb = input.wasMousePressed(0);
+        const rmb = input.wasMousePressed(2);
+        if ((lmb || rmb) && activeInst.state === 'ready') {
+          grenadeSystem.throw_(
+            activeInst.def.id as 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy',
+            'local',
+            { ox: eyeX, oy: eyeY, oz: eyeZ, fwdX, fwdY, fwdZ, power: lmb ? 'full' : 'underhand' },
+            time.simMs,
+          );
+          const inv = localPlayer.character.inventory!;
+          consumeActiveGrenade(inv);
+          viewModel.setWeapon(activeInstance(inv));
+        }
+      } else {
+
+      // Only forward RMB to firing for melee weapons — for scoped guns
+      // RMB is already consumed by the scope toggle above.
+      const meleeSecondaryEdge = rmbEdge && activeInst.def.fireMode === 'melee';
       const fired = firing.step(time.simMs, localPlayer.character, activeInst, {
         ox: eyeX, oy: eyeY, oz: eyeZ,
         fwdX, fwdY, fwdZ,
@@ -300,36 +589,149 @@ function bootstrap(): void {
         triggerHeld: input.isMouseDown(0),
         triggerEdge: input.wasMousePressed(0),
         reloadEdge: input.wasPressed('KeyR'),
+        secondaryEdge: meleeSecondaryEdge,
       });
-      if (fired) {
-        viewModel.addKick(activeInst.def.cameraKickDeg.x * 0.05, activeInst.def.cameraKickDeg.y * 0.05, 0.04);
+      if (fired !== 'none') {
+        if (activeInst.def.fireMode === 'melee') {
+          viewModel.triggerSwing(fired === 'secondary' ? 'stab' : 'slash');
+        } else {
+          viewModel.addKick(activeInst.def.cameraKickDeg.x * 0.05, activeInst.def.cameraKickDeg.y * 0.05, 0.04);
+        }
       }
       viewModel.setReloading(activeInst.state === 'reloading');
+      }   // end of non-grenade else
     }
 
-    // Plant / defuse intent — read from the same E key.
+    // Step bot AI: perception → decision → aim/fire → movement. Gated on
+    // round phase: during freeze they stand at spawn; during the live
+    // phase they engage and path. Brain.step decides if the bot wants to
+    // hold ground (engage / reload) or follow its path; we surface that
+    // decision into stepBot so the controller stays the single source of
+    // truth for movement.
+    // Track the freeze→live transition so lineup triggers know when
+    // "opening" actually starts.
+    const curPhase = match.round?.phase ?? null;
+    if (curPhase === 'live' && lastSeenPhase !== 'live') {
+      liveStartedAtMs = time.simMs;
+    }
+    lastSeenPhase = curPhase;
+
+    if (match.round?.phase === 'live') {
+      // Blackboard refresh once per tick: aggregate per-bot KnownEnemies
+      // into the team map, mirror the bomb FSM, and prune stale role
+      // entries. This is cheap (a handful of map ops over 9 bots) and
+      // gives every brain a consistent view this tick.
+      const bombInfo = mirrorBomb(match.round?.bomb);
+      refreshTeamRoster(tBoard, bots, bombInfo);
+      refreshTeamRoster(ctBoard, bots, bombInfo);
+      aggregateKnown(tBoard, bots, time.simMs);
+      aggregateKnown(ctBoard, bots, time.simMs);
+
+      // Local player counts toward the alive total for save heuristics.
+      const localT = localPlayer.character.team === 'T' && localPlayer.character.alive ? 1 : 0;
+      const localCT = localPlayer.character.team === 'CT' && localPlayer.character.alive ? 1 : 0;
+      const tAlive = aliveCount(tBoard, bots) + localT;
+      const ctAlive = aliveCount(ctBoard, bots) + localCT;
+
+      for (const bot of bots) {
+        if (!bot.character.alive) continue;
+        bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
+        const isT = bot.character.team === 'T';
+        const board = isT ? tBoard : ctBoard;
+        const teammates = (isT ? tAlive : ctAlive) - 1;   // exclude self
+        const enemies = isT ? ctAlive : tAlive;
+        const spawnPos = isT ? tSpawnCentroid : ctSpawnCentroid;
+        const brainCtx = {
+          characters,
+          bomb: match.round?.bomb ?? null,
+          world,
+          blackboard: board,
+          teammatesAlive: teammates,
+          enemiesAlive: enemies,
+          spawnX: spawnPos.x,
+          spawnZ: spawnPos.z,
+          grenades: grenadeSystem,
+          liveSinceMs: liveStartedAtMs,
+        };
+        // Save state retargets the bot's path to spawn. We re-apply here
+        // each tick so a transition out of save restores the strategist's
+        // original objective even if the brain didn't write it back.
+        applyBotObjectiveFromBoard(bot, board, spawnPos);
+        const decision = bot.brain.step(bot, bot.perception, brainCtx, firing, dtMs, time.simMs);
+        stepBot(bot, dtMs, time.simMs, pathService, {
+          followPath: decision.followPath,
+          // While engaging the brain owns yaw; let it through unmodified.
+          faceMovement: decision.followPath,
+        });
+      }
+    } else {
+      // Freeze / round-end: still tick perception so KnownEnemies decay
+      // and bots are ready to engage the moment freeze ends.
+      for (const bot of bots) {
+        if (!bot.character.alive) continue;
+        bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
+      }
+    }
+
+    // Plant / defuse intent — read from the same E key. We assemble
+    // exactly one PlanterIntent (the bomb FSM only acts on the carrier)
+    // and a list of defuser intents (the FSM picks the closest). Bots
+    // surface their wants via `brain.wantsPlant` / `brain.wantsDefuse`
+    // and we paper that onto the same struct shape the local player
+    // produces — the FSM doesn't need to know who's a bot.
     const eHeld = input.isDown('KeyE') && !buyMenu.isOpen() && localPlayer.character.alive;
-    const planterIntent = (() => {
+    const carrierId = match.round?.bomb?.carrierId ?? null;
+    let planterIntent: { id: string; pos: import('@babylonjs/core/Maths/math.vector').Vector3; holdingPlant: boolean; alive: boolean } | null = null;
+    if (carrierId === 'local') {
       const inv = localPlayer.character.inventory;
-      const hasC4 = !!inv?.c4;
-      if (!hasC4) return null;
-      if (localPlayer.character.team !== 'T') return null;
-      return {
-        id: 'local',
-        pos: localPlayer.character.pos,
-        holdingPlant: eHeld,
-        alive: localPlayer.character.alive,
-      };
-    })();
-    const defuserIntents = localPlayer.character.team === 'CT' && match.round?.bomb && match.round.bomb.phase === 'planted'
-      ? [{
+      if (inv?.c4 && localPlayer.character.team === 'T') {
+        planterIntent = {
+          id: 'local',
+          pos: localPlayer.character.pos,
+          holdingPlant: eHeld,
+          alive: localPlayer.character.alive,
+        };
+      }
+    } else if (carrierId) {
+      const carrier = bots.find(b => b.id === carrierId);
+      if (carrier) {
+        planterIntent = {
+          id: carrier.id,
+          pos: carrier.character.pos,
+          holdingPlant: carrier.brain.wantsPlant,
+          alive: carrier.character.alive,
+        };
+      }
+    }
+
+    const defuserIntents: Array<{ id: string; pos: import('@babylonjs/core/Maths/math.vector').Vector3; holdingDefuse: boolean; hasKit: boolean; alive: boolean }> = [];
+    if (match.round?.bomb && (match.round.bomb.phase === 'planted' || match.round.bomb.phase === 'defusing')) {
+      if (localPlayer.character.team === 'CT') {
+        defuserIntents.push({
           id: 'local',
           pos: localPlayer.character.pos,
           holdingDefuse: eHeld,
           hasKit: localPlayer.character.hasKit,
           alive: localPlayer.character.alive,
-        }]
-      : [];
+        });
+      }
+      for (const bot of bots) {
+        if (bot.character.team !== 'CT') continue;
+        if (!bot.character.alive) continue;
+        defuserIntents.push({
+          id: bot.id,
+          pos: bot.character.pos,
+          holdingDefuse: bot.brain.wantsDefuse,
+          hasKit: bot.character.hasKit,
+          alive: true,
+        });
+      }
+    }
+
+    // Grenade physics. Runs every sim tick regardless of phase so an
+    // already-thrown grenade still detonates if the round ends mid-air;
+    // the system clears itself on round reset.
+    grenadeSystem.step(dtMs, time.simMs);
 
     // Step the match.
     match = stepMatch(match, {
@@ -364,16 +766,18 @@ function bootstrap(): void {
         // Match over — sit here forever.
       } else {
         // Start the next round. Reset before beginRound so the carrier
-        // pick sees alive characters.
-        const localSurvived = localPlayer.character.alive;
-        resetRoster(characters, localPlayer, world, match, localSurvived);
+        // pick sees alive characters. snapshotSurvivors() runs before
+        // resetRoster so carry-over reflects who actually survived.
+        const survivors = snapshotSurvivors();
+        resetRoster(characters, localPlayer, world, match, survivors);
         match = beginRound(match, time.simMs, characters);
         if (match.round?.bomb?.carrierId) {
           assignBomb(characters, match.round.bomb.carrierId);
         }
-        if (match.round!.number !== lastRoundNumber) {
-          events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
-          lastRoundNumber = match.round!.number;
+        refreshBotsForNewRound();
+        if (match.round && match.round.number !== lastRoundNumber) {
+          events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
+          lastRoundNumber = match.round.number;
           // Refresh view model in case the player got the C4 or lost their primary.
           if (localPlayer.character.inventory) {
             viewModel.setWeapon(activeInstance(localPlayer.character.inventory));
@@ -392,17 +796,21 @@ function bootstrap(): void {
       if (localSlot) {
         localPlayer.character.team = localSlot.currentSide;
       }
-      resetRoster(characters, localPlayer, world, match, /* localSurvived */ false);
+      // Halftime: nobody carries over — fresh defaults for everyone.
+      resetRoster(characters, localPlayer, world, match, new Set<string>());
       match = beginRound(match, time.simMs, characters);
       if (match.round?.bomb?.carrierId) {
         assignBomb(characters, match.round.bomb.carrierId);
       }
+      refreshBotsForNewRound();
       if (localPlayer.character.inventory) {
         viewModel.setWeapon(activeInstance(localPlayer.character.inventory));
       }
       roundEndApplied = false;
-      events.emit('match:roundStart', { number: match.round!.number, tMs: time.simMs });
-      lastRoundNumber = match.round!.number;
+      if (match.round) {
+        events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
+        lastRoundNumber = match.round.number;
+      }
     }
 
     // Match end audio cue.
@@ -411,13 +819,43 @@ function bootstrap(): void {
 
   // ---- Render systems ----
   loop.registerRender((renderDtMs) => {
+    adaptiveQuality.step(renderDtMs);
+    // Drive scope-related state BEFORE syncRender so the FOV lerp uses the
+    // latest target this frame.
+    const renderInst = currentInstance(localPlayer);
+    const buyOpen = buyMenu.isOpen();
+    const effectiveScopeLevel =
+      (localPlayer.character.alive && !buyOpen && renderInst && renderInst.scopeLevel > 0)
+        ? renderInst.scopeLevel
+        : 0;
+    if (effectiveScopeLevel > 0 && renderInst?.def.scopeFovDeg) {
+      const fovDeg = renderInst.def.scopeFovDeg[effectiveScopeLevel - 1] ?? renderInst.def.scopeFovDeg[0]!;
+      fps.setTargetFovRad((fovDeg * Math.PI) / 180);
+    } else {
+      fps.resetFov();
+    }
+    scopeHud.setLevel(effectiveScopeLevel);
+
     fps.syncRender();
+    // Spectator override: while the local player is dead, refresh the
+    // candidate roster and snap the camera to a teammate's eye. Hide
+    // the view model so a "ghost knife" doesn't float across the screen
+    // while spectating.
+    const isDead = !localPlayer.character.alive;
+    if (isDead) {
+      spectator.refresh(bots, localPlayer.character.team);
+      spectator.applyToCamera(fps.camera);
+      viewModel.setVisible(false);
+    } else {
+      viewModel.setVisible(effectiveScopeLevel === 0);
+    }
+    spectatorHud.setActive(isDead, spectator.currentTarget()?.id ?? null);
     // Keep the view model in sync with whatever weapon is currently active.
     // This catches purchases (which auto-switch the active slot) without
     // requiring an explicit setWeapon call from every code path.
-    viewModel.setWeapon(currentInstance(localPlayer));
+    viewModel.setWeapon(renderInst);
     viewModel.update(controller.state.speed, renderDtMs);
-    for (const d of dummies) syncDummy(d);
+    for (const b of bots) syncBotMesh(b);
     c4Entity.update(match.round?.bomb ?? null, time.simMs);
 
     const cam = fps.camera;
@@ -431,7 +869,10 @@ function bootstrap(): void {
     );
 
     debugHud.update(renderDtMs);
+    aiDebugHud.update(bots, tBoard, ctBoard);
     combatHud.update(localPlayer.character, performance.now());
+    flashOverlay.update(localPlayer.character, time.simMs);
+    matchEndHud.update(match);
     roundHud.update(match, characters, time.simMs);
     scoreboard.update(match, characters);
     bombHud.update(localPlayer.character, match.round?.bomb ?? null, world);
@@ -451,7 +892,7 @@ function bootstrap(): void {
   // Quiet a couple of unused-ish references for the linter.
   void engine; void scene; void makeInstance; void playSound;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, dummies, characters, get match() { return match; } };
+  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, bots, navGrid, pathService, characters, get match() { return match; } };
 }
 
 function currentInstance(p: LocalPlayer): WeaponInstance | null {
@@ -462,6 +903,7 @@ function currentInstance(p: LocalPlayer): WeaponInstance | null {
     case 'secondary': return inv.secondary ?? null;
     case 'knife': return inv.knife;
     case 'c4': return inv.c4 ?? null;
+    case 'grenade': return inv.grenades[inv.activeGrenadeIdx] ?? null;
   }
 }
 

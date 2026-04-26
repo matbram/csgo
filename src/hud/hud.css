@@ -41,13 +41,20 @@ html, body {
   font-feature-settings: "tnum" 1;
 }
 
-/* ---------- Crosshair ---------- */
+/* ---------- Crosshair ----------
+ * Color and scale come from CSS variables on #hud-root, set by the
+ * settings store. Defaults match the pre-settings build.
+ */
+#hud-root {
+  --crosshair-color: #fff4dc;
+  --crosshair-scale: 1;
+}
 .crosshair {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 18px;
-  height: 18px;
+  width: calc(18px * var(--crosshair-scale));
+  height: calc(18px * var(--crosshair-scale));
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
@@ -55,8 +62,9 @@ html, body {
 .crosshair::after {
   content: "";
   position: absolute;
-  background: rgba(255, 244, 220, 0.85);
+  background: var(--crosshair-color);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
+  opacity: 0.92;
 }
 .crosshair::before {
   left: 50%; top: 0; bottom: 0;
@@ -66,6 +74,336 @@ html, body {
   top: 50%; left: 0; right: 0;
   height: 2px; transform: translateY(-50%);
 }
+.crosshair.hidden { display: none; }
+
+/* ---------- Settings menu ---------- */
+.settings-menu {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+  z-index: 60;
+}
+.settings-menu.hidden { display: none; }
+.settings-card {
+  width: min(520px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  background: #14110c;
+  border: 1px solid rgba(255, 196, 96, 0.18);
+  border-radius: 6px;
+  padding: 18px 22px 16px;
+  color: #f4ead7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+}
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 196, 96, 0.15);
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+.settings-title {
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  color: #ffd089;
+}
+.settings-close {
+  background: transparent;
+  border: 1px solid rgba(255, 196, 96, 0.25);
+  color: #f4ead7;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.settings-close:hover { background: rgba(255, 196, 96, 0.12); }
+.settings-section { margin-bottom: 14px; }
+.settings-section-title {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #c9b88a;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.settings-section-note {
+  font-size: 11px;
+  color: rgba(244, 234, 215, 0.55);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+.settings-row-label {
+  flex: 0 0 120px;
+  color: #f4ead7;
+}
+.settings-row input[type="range"] {
+  flex: 1;
+  accent-color: #ffd089;
+}
+.settings-row input[type="color"] {
+  width: 36px;
+  height: 24px;
+  background: transparent;
+  border: 1px solid rgba(255, 196, 96, 0.25);
+  cursor: pointer;
+}
+.settings-row-value {
+  flex: 0 0 64px;
+  text-align: right;
+  color: #ffd089;
+  font-variant-numeric: tabular-nums;
+}
+.settings-row-radio { align-items: flex-start; }
+.settings-segment {
+  display: flex;
+  flex: 1;
+  border: 1px solid rgba(255, 196, 96, 0.22);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.settings-segment button {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #f4ead7;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  border-right: 1px solid rgba(255, 196, 96, 0.18);
+}
+.settings-segment button:last-child { border-right: none; }
+.settings-segment button:hover { background: rgba(255, 196, 96, 0.10); }
+.settings-segment button.selected {
+  background: rgba(255, 196, 96, 0.25);
+  color: #1a1410;
+}
+.settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid rgba(255, 196, 96, 0.15);
+  padding-top: 10px;
+  margin-top: 6px;
+}
+.settings-reset {
+  background: transparent;
+  border: 1px solid rgba(255, 196, 96, 0.25);
+  color: #f4ead7;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-reset:hover { background: rgba(255, 196, 96, 0.10); }
+.settings-footer-hint {
+  color: rgba(244, 234, 215, 0.45);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+/* ---------- Spectator banner ---------- */
+.spectator-banner {
+  position: absolute;
+  left: 50%;
+  top: 22%;
+  transform: translateX(-50%);
+  padding: 10px 20px;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(255, 116, 116, 0.55);
+  border-radius: 4px;
+  color: #ff7474;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  text-align: center;
+  pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
+  z-index: 35;
+}
+.spectator-banner.hidden { display: none; }
+
+/* ---------- Match end overlay ---------- */
+.match-end {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  z-index: 60;
+}
+.match-end.hidden { display: none; }
+.match-end-card {
+  background: rgba(20, 14, 8, 0.92);
+  border: 1px solid rgba(255, 220, 170, 0.25);
+  border-radius: 8px;
+  padding: 38px 64px;
+  text-align: center;
+  color: #ffe9c2;
+  box-shadow: 0 16px 60px rgba(0, 0, 0, 0.75);
+}
+.match-end-title {
+  font-size: 38px;
+  font-weight: 600;
+  letter-spacing: 0.20em;
+  margin-bottom: 18px;
+}
+.match-end-title.t  { color: #d49a4e; }
+.match-end-title.ct { color: #6a9ed6; }
+.match-end-score {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 22px;
+  letter-spacing: 0.12em;
+  margin-bottom: 18px;
+}
+.match-end-score .t  { color: #d49a4e; }
+.match-end-score .ct { color: #6a9ed6; }
+.match-end-score .sep { color: #98896c; padding: 0 12px; }
+.match-end-hint {
+  font-size: 12px;
+  color: #d4c4a3;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* ---------- Flashbang overlay ---------- */
+.flash-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: #ffffff;
+  opacity: 0;
+  z-index: 25;
+  transition: opacity 60ms linear;
+}
+
+/* ---------- AI debug overlay ---------- */
+.ai-debug-panel {
+  position: absolute;
+  right: 8px;
+  top: 200px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 220, 170, 0.18);
+  border-radius: 4px;
+  font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #ffe9c2;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  min-width: 280px;
+  z-index: 22;
+}
+.ai-debug-panel.hidden { display: none; }
+.ai-debug-title {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: #d4c4a3;
+  margin-bottom: 4px;
+}
+.ai-debug-panel .ai-strategy {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 220, 170, 0.12);
+}
+.ai-debug-panel .ai-strategy .t  { color: #d49a4e; }
+.ai-debug-panel .ai-strategy .ct { color: #6a9ed6; }
+.ai-debug-panel .ai-row {
+  display: grid;
+  grid-template-columns: 70px 78px 56px 28px 56px 50px 80px 32px;
+  column-gap: 6px;
+  padding: 1px 0;
+}
+.ai-debug-panel .ai-row.t  .id { color: #d49a4e; }
+.ai-debug-panel .ai-row.ct .id { color: #6a9ed6; }
+.ai-debug-panel .ai-row .role  { color: #d4c4a3; }
+.ai-debug-panel .ai-row .state { color: #b6e9a0; }
+.ai-debug-panel .ai-row .hp    { color: #ffb6b6; text-align: right; }
+.ai-debug-panel .ai-row .wpn   { color: #ffd28a; }
+.ai-debug-panel .ai-row .ammo  { color: #ffe9c2; text-align: right; }
+.ai-debug-panel .ai-row .target{ color: #cfd8e3; }
+.ai-debug-panel .ai-row .known { color: #98896c; text-align: right; }
+
+/* ---------- Sniper scope overlay ---------- */
+.scope-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+}
+.scope-overlay.hidden { display: none; }
+/* The circle's outer box-shadow masks the entire viewport outside the
+ * lens, so we don't need separate side-bar elements. */
+.scope-bar { display: none; }
+.scope-circle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100vh;
+  height: 100vh;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.92), inset 0 0 0 4px #000, inset 0 0 24px rgba(0,0,0,0.6);
+}
+.scope-cross {
+  position: absolute;
+  background: #000;
+}
+.scope-cross-h {
+  left: 0; right: 0;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+  box-shadow: 0 0 1px rgba(0,0,0,0.7);
+}
+.scope-cross-v {
+  top: 0; bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  box-shadow: 0 0 1px rgba(0,0,0,0.7);
+}
+.scope-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  background: #000;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+.scope-level {
+  position: absolute;
+  right: calc(50% - 8vh);
+  top: calc(50% + 22vh);
+  color: #f4ead7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  letter-spacing: 0.18em;
+  text-shadow: 0 0 4px #000;
+}
+.scope-overlay.scope-zoom-2 .scope-cross { background: #b6e9a0; }
+.scope-overlay.scope-zoom-2 .scope-dot { background: #b6e9a0; }
 
 /* ---------- Debug overlay ---------- */
 .debug-panel {

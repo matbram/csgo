@@ -4,6 +4,7 @@
  *  and reset by `commitTick()`. */
 
 import { events } from './events';
+import { settings } from './settings';
 
 export type KeyCode = string; // KeyboardEvent.code, e.g. 'KeyW', 'Space'
 
@@ -20,16 +21,35 @@ class InputState {
   private mousePressedThisTick = 0;        // edges
   private mouseReleasedThisTick = 0;
 
+  /** Wheel deltaY accumulated since last `consumeWheelTicks()`. We expose
+   *  this as an integer count of "ticks" — each ~100 of native deltaY is
+   *  one tick — so trackpads (which send fractional deltas) and mice
+   *  (which send larger discrete deltas) both produce one switch per
+   *  notch as expected. */
+  private wheelAccum = 0;
+
   private _pointerLocked = false;
   private _bound = false;
   private _canvas: HTMLCanvasElement | null = null;
 
-  /** Mouse sensitivity in radians per pixel. Tuned to feel like CS:GO ~2.0. */
+  /** Mouse sensitivity in radians per pixel. Tuned to feel like CS:GO ~2.0.
+   *  Driven by the settings store after construction. */
   sensitivity = 0.0022;
 
+  constructor() {
+    settings.subscribe((s) => { this.sensitivity = s.sensitivity; });
+  }
+
   // Bound handlers kept on the instance so we can detach.
+  /** Latched Escape edge. The browser releases pointer lock on Esc and
+   *  our lock-change handler clears `pressedThisTick`, so a vanilla
+   *  edge query loses the press. This flag is set on Esc keydown and
+   *  consumed independently. */
+  private escapePending = false;
+
   private readonly onKeyDown = (e: KeyboardEvent) => {
     if (e.repeat) return;
+    if (e.code === 'Escape') this.escapePending = true;
     if (!this.down.has(e.code)) {
       this.down.add(e.code);
       this.pressedThisTick.add(e.code);
@@ -64,6 +84,24 @@ class InputState {
     }
   };
 
+  private readonly onWheel = (e: WheelEvent) => {
+    if (!this._pointerLocked) return;
+    // Browsers report deltas in different units — pixels (0), lines (1),
+    // pages (2). Normalize to a unit roughly matching one mouse notch.
+    const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
+    this.wheelAccum += e.deltaY * unit;
+    // Don't let the page scroll under the canvas while the game is live.
+    e.preventDefault();
+  };
+
+  private readonly onContextMenu = (e: MouseEvent) => {
+    // Right-click is used in-game (e.g. AWP scope), so suppress the
+    // browser context menu when the click lands on the render canvas.
+    if (this._canvas && e.target === this._canvas) {
+      e.preventDefault();
+    }
+  };
+
   private readonly onPointerLockChange = () => {
     const locked = document.pointerLockElement === this._canvas;
     if (locked === this._pointerLocked) return;
@@ -78,6 +116,7 @@ class InputState {
       this.mouseDownButtons = 0;
       this.mousePressedThisTick = 0;
       this.mouseReleasedThisTick = 0;
+      this.wheelAccum = 0;
     }
     events.emit('input:pointerLockChanged', { locked });
   };
@@ -92,6 +131,7 @@ class InputState {
     this.mouseDownButtons = 0;
     this.mousePressedThisTick = 0;
     this.mouseReleasedThisTick = 0;
+    this.wheelAccum = 0;
   };
 
   attach(canvas: HTMLCanvasElement): void {
@@ -104,6 +144,9 @@ class InputState {
     window.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('blur', this.onBlur);
+    window.addEventListener('contextmenu', this.onContextMenu);
+    // `wheel` must not be passive so we can preventDefault while locked.
+    window.addEventListener('wheel', this.onWheel, { passive: false });
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
   }
 
@@ -115,6 +158,8 @@ class InputState {
     window.removeEventListener('mousedown', this.onMouseDown);
     window.removeEventListener('mouseup', this.onMouseUp);
     window.removeEventListener('blur', this.onBlur);
+    window.removeEventListener('contextmenu', this.onContextMenu);
+    window.removeEventListener('wheel', this.onWheel);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     this._bound = false;
     this._canvas = null;
@@ -122,7 +167,14 @@ class InputState {
 
   requestPointerLock(): void {
     if (!this._canvas) return;
-    void this._canvas.requestPointerLock();
+    // Some browsers throttle requests that fire too soon after an Esc
+    // release ("user has exited the lock"). The promise rejection is
+    // benign — the user can click the canvas to re-acquire — so we
+    // swallow it instead of leaving an unhandled-rejection warning.
+    const p = this._canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+    if (p && typeof (p as Promise<void>).then === 'function') {
+      (p as Promise<void>).catch(() => {});
+    }
   }
 
   releasePointerLock(): void {
@@ -158,12 +210,34 @@ class InputState {
     return (this.mouseReleasedThisTick & (1 << button)) !== 0;
   }
 
+  /** Consume accumulated wheel motion as a signed integer count of "ticks":
+   *  positive when the user scrolled DOWN (deltaY > 0, conventionally
+   *  "next" in lists), negative for scroll UP. Each ~100 units of native
+   *  deltaY is one tick. Any sub-tick remainder is preserved across calls
+   *  so slow trackpad scrolls still register eventually. */
+  consumeWheelTicks(): number {
+    const STEP = 100;
+    if (this.wheelAccum > -STEP && this.wheelAccum < STEP) return 0;
+    const ticks = (this.wheelAccum > 0 ? Math.floor(this.wheelAccum / STEP) : Math.ceil(this.wheelAccum / STEP));
+    this.wheelAccum -= ticks * STEP;
+    return ticks;
+  }
+
   /** Consume mouse delta accumulated since the last consumption. */
   consumeMouseDelta(): { dx: number; dy: number } {
     const out = { dx: this.mouseDx, dy: this.mouseDy };
     this.mouseDx = 0;
     this.mouseDy = 0;
     return out;
+  }
+
+  /** True once on the tick after the user pressed Esc; cleared by the
+   *  call. Survives a pointer-lock release in the same task — that's
+   *  why this isn't part of `pressedThisTick`. */
+  consumeEscape(): boolean {
+    if (!this.escapePending) return false;
+    this.escapePending = false;
+    return true;
   }
 
   /** Called by the loop after a sim tick consumes inputs. Clears the

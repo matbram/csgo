@@ -55,6 +55,24 @@ export interface EventMap {
   };
   'combat:reload': { shooterId: string; weapon: string; tMs: number };
   'combat:weaponSwitch': { shooterId: string; weapon: string; tMs: number };
+  'grenade:thrown': {
+    grenadeId: number;
+    kind: 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';
+    throwerId: string;
+    ox: number; oy: number; oz: number;
+    vx: number; vy: number; vz: number;
+    tMs: number;
+  };
+  'grenade:bounce': {
+    grenadeId: number; x: number; y: number; z: number; tMs: number;
+  };
+  'grenade:detonated': {
+    grenadeId: number;
+    kind: 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';
+    throwerId: string;
+    x: number; y: number; z: number;
+    tMs: number;
+  };
   // Match
   'match:bombPlanted': { site: 'A' | 'B'; x: number; y: number; z: number; tMs: number };
   'match:bombDefused': { defuserId: string; x: number; y: number; z: number; tMs: number };

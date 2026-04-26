@@ -30,6 +30,9 @@ export interface DamageInput {
   distance: number;
   /** Victim HP/armor going in. */
   victim: { hp: number; armor: number; helmet: boolean };
+  /** Per-shot damage multiplier on the pre-armor damage. Used by alt-fire
+   *  modes like the knife stab. Defaults to 1. */
+  damageMul?: number;
 }
 
 export interface DamageOutput {
@@ -76,9 +79,10 @@ export function applyArmor(
 export function computeDamage(input: DamageInput): DamageOutput {
   const { weapon, hitbox, distance, victim } = input;
   const isHead = hitbox === 'head';
+  const mul = input.damageMul ?? 1;
 
-  // Base × hitbox × falloff.
-  let pre = weapon.baseDamage * HITBOX_MULT[hitbox] * falloff(weapon, distance);
+  // Base × hitbox × falloff × per-shot multiplier (alt-fire).
+  let pre = weapon.baseDamage * HITBOX_MULT[hitbox] * falloff(weapon, distance) * mul;
 
   // Helmet absorbs head shots (one shot allowed through then helmet gone).
   let helmetDestroyed = false;

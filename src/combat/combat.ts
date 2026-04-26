@@ -13,6 +13,7 @@ import { hitboxPose } from '../entities/character';
 import { events } from '../engine/events';
 import { computeInaccuracy } from './inaccuracy';
 import { time } from '../engine/time';
+import type { SmokeField } from '../grenades/smokeField';
 
 const MAX_RANGE_M = 120;
 
@@ -32,6 +33,10 @@ export interface FireOptions {
   sprayIndex: number;
   /** Inaccuracy in degrees (precomputed from motion). */
   inaccuracyDeg: number;
+  /** Per-shot damage multiplier on top of the weapon's base damage.
+   *  Used by alternate-fire modes (e.g. knife stab) to deal more damage
+   *  without forking the WeaponDef. Defaults to 1. */
+  damageMul?: number;
 }
 
 export interface FireResult {
@@ -57,6 +62,10 @@ export class CombatSystem {
   constructor(
     private readonly world: WorldQuery,
     private readonly characters: () => Character[],
+    /** Optional smoke field — when present, character hits behind a
+     *  thick smoke chord are dropped (we leave bullet-through-smoke
+     *  damage falloff for a future pass). */
+    private readonly smokeField: SmokeField | null = null,
   ) {}
 
   fire(opts: FireOptions): FireResult {
@@ -81,16 +90,34 @@ export class CombatSystem {
       scatterDeg,
     );
 
+    // Melee weapons are short-range — anything past the falloff envelope
+    // is wasted compute and would emit a kill-from-the-void event.
+    const maxRange = weapon.fireMode === 'melee'
+      ? Math.max(0.5, weapon.falloffStartM + weapon.falloffRangeM)
+      : MAX_RANGE_M;
+
     // Raycast world.
     const worldHit = this.world.rayWorld(
       opts.ox, opts.oy, opts.oz,
       finalDir.x, finalDir.y, finalDir.z,
-      MAX_RANGE_M,
+      maxRange,
     );
     const worldT = worldHit?.t ?? Infinity;
+    // Smoke chord: a thick smoke pass blocks visual confirmation of
+    // hits. We treat it as a soft wall — bullets still travel (CS:GO
+    // can spray through smoke), but for hit registration any character
+    // beyond the smoke threshold is considered occluded.
+    const smokeBlockT = this.smokeField?.blockingT(
+      opts.ox, opts.oy, opts.oz,
+      finalDir.x, finalDir.y, finalDir.z,
+      Math.min(worldT, maxRange),
+    ) ?? null;
+    const visT = smokeBlockT !== null ? Math.min(worldT, smokeBlockT) : worldT;
 
-    // Raycast each character (skip shooter and dead).
-    let closestT = worldT;
+    // Raycast each character (skip shooter and dead). We clamp on
+    // visT (which folds smoke into the wall ray) so a character behind
+    // smoke isn't reported as a hit.
+    let closestT = visT;
     let bestVictim: Character | null = null;
     let bestKind: HitboxKind = 'chest';
     let bestPoint = { x: 0, y: 0, z: 0 };
@@ -113,11 +140,13 @@ export class CombatSystem {
 
     // Resolve.
     if (bestVictim) {
+      const damageMul = opts.damageMul ?? 1;
       const dmg = computeDamage({
         weapon,
         hitbox: bestKind,
         distance: closestT,
         victim: { hp: bestVictim.hp, armor: bestVictim.armor, helmet: bestVictim.helmet },
+        damageMul,
       });
 
       // Apply damage (integer in CS:GO; we use floor for HP, floor for armor).
@@ -181,11 +210,11 @@ export class CombatSystem {
 
     // Miss into the void.
     return {
-      endX: opts.ox + finalDir.x * MAX_RANGE_M,
-      endY: opts.oy + finalDir.y * MAX_RANGE_M,
-      endZ: opts.oz + finalDir.z * MAX_RANGE_M,
+      endX: opts.ox + finalDir.x * maxRange,
+      endY: opts.oy + finalDir.y * maxRange,
+      endZ: opts.oz + finalDir.z * maxRange,
       kind: 'miss',
-      distance: MAX_RANGE_M,
+      distance: maxRange,
     };
   }
 }

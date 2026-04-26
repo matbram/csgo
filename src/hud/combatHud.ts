@@ -157,6 +157,7 @@ function activeOrNull(inv: NonNullable<Character['inventory']>): WeaponInstance 
     case 'secondary': return inv.secondary ?? null;
     case 'knife': return inv.knife;
     case 'c4': return inv.c4 ?? null;
+    case 'grenade': return inv.grenades[inv.activeGrenadeIdx] ?? null;
   }
 }
 

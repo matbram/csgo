@@ -121,6 +121,38 @@ describe('Pistol vs armor', () => {
   });
 });
 
+describe('Knife alt-fire damageMul', () => {
+  const knife = getWeapon('knife');
+
+  it('default mul=1 reproduces baseDamage at chest no-armor', () => {
+    const r = computeDamage({
+      weapon: knife, hitbox: 'chest', distance: 0,
+      victim: { hp: 100, armor: 0, helmet: false },
+    });
+    expect(r.hpDamage).toBeCloseTo(knife.baseDamage, 1);
+  });
+
+  it('stab multiplier scales pre-armor damage proportionally', () => {
+    const stab = knife.secondaryAttack;
+    expect(stab).toBeDefined();
+    const r = computeDamage({
+      weapon: knife, hitbox: 'chest', distance: 0,
+      victim: { hp: 200, armor: 0, helmet: false },
+      damageMul: stab!.damageMul,
+    });
+    expect(r.hpDamage).toBeCloseTo(knife.baseDamage * stab!.damageMul, 1);
+  });
+
+  it('stab kills a 100hp unarmored victim in one hit', () => {
+    const r = computeDamage({
+      weapon: knife, hitbox: 'chest', distance: 0,
+      victim: { hp: 100, armor: 0, helmet: false },
+      damageMul: knife.secondaryAttack!.damageMul,
+    });
+    expect(r.killing).toBe(true);
+  });
+});
+
 describe('Damage clamping', () => {
   it('does not deal more HP than victim has', () => {
     const r = computeDamage({
