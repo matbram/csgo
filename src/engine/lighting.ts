@@ -30,21 +30,24 @@ export function createLighting(): LightingHandles {
   if (lighting) return lighting;
   const scene = getScene();
 
-  // Sun direction: late afternoon golden-hour-ish for warm desert.
-  // Direction *toward* the geometry (i.e. light travels in this direction).
-  const sunDir = new Vector3(-0.55, -0.7, -0.45).normalize();
+  // Sun direction: midday Dust 2 — overhead and slightly south-west
+  // with a near-neutral white cast. Reference shots read almost
+  // neutral, with a cool-blue sky fill driving the shadowed wall faces.
+  const sunDir = new Vector3(-0.30, -0.85, -0.30).normalize();
   const sun = new DirectionalLight('sun', sunDir, scene);
-  sun.intensity = 3.2;
-  sun.diffuse = new Color3(1.0, 0.92, 0.78);
-  sun.specular = new Color3(1.0, 0.92, 0.78);
+  sun.intensity = 3.6;
+  sun.diffuse = new Color3(1.0, 0.97, 0.92);
+  sun.specular = new Color3(1.0, 0.97, 0.92);
   // Tighten the shadow frustum to the play area so shadow resolution is high.
   sun.shadowMinZ = 0.5;
   sun.shadowMaxZ = 220;
 
   const ambient = new HemisphericLight('ambient', new Vector3(0, 1, 0), scene);
-  ambient.intensity = 0.45;
-  ambient.diffuse = new Color3(0.85, 0.88, 1.0);          // sky-ish
-  ambient.groundColor = new Color3(0.42, 0.34, 0.22);     // sand bounce
+  // Brighter cool-sky fill so shadowed wall faces don't drop into golden
+  // gloom — Dust 2 shadows read pale blue-grey, not amber.
+  ambient.intensity = 0.65;
+  ambient.diffuse = new Color3(0.78, 0.85, 1.0);          // cool sky fill
+  ambient.groundColor = new Color3(0.55, 0.46, 0.32);     // sandy bounce
 
   // Cascaded shadow map (3 cascades). On M1 we keep textures modest.
   let shadow: CascadedShadowGenerator | ShadowGenerator;
@@ -72,14 +75,16 @@ export function createLighting(): LightingHandles {
     shadow = sg;
   }
 
-  // Sky dome. A large sphere with `SkyMaterial` painted on the inside.
+  // Sky dome — a clear, slightly hazy desert blue. Lower turbidity and
+  // a higher rayleigh than the previous golden-hour preset push the
+  // tone away from amber and toward the bright sky in the reference.
   const skyMat = new SkyMaterial('sky-material', scene);
   skyMat.backFaceCulling = false;
-  skyMat.luminance = 1.0;
-  skyMat.turbidity = 4.5;
-  skyMat.rayleigh = 1.8;
-  skyMat.mieCoefficient = 0.005;
-  skyMat.mieDirectionalG = 0.85;
+  skyMat.luminance = 1.05;
+  skyMat.turbidity = 3.0;
+  skyMat.rayleigh = 2.2;
+  skyMat.mieCoefficient = 0.004;
+  skyMat.mieDirectionalG = 0.82;
   // Sun position the sky uses (opposite of light direction).
   skyMat.useSunPosition = true;
   skyMat.sunPosition = sunDir.scale(-1);
@@ -90,10 +95,11 @@ export function createLighting(): LightingHandles {
   skyMesh.receiveShadows = false;
   skyMesh.applyFog = false;
 
-  // Subtle distance fog matching the sky horizon for haze.
+  // Subtle distance haze. Lighter, slightly cooler than before so the
+  // horizon reads as a hot summer sky, not a sandstorm.
   scene.fogMode = 2; // FOGMODE_EXP2
-  scene.fogDensity = 0.0028;
-  scene.fogColor = new Color3(0.78, 0.69, 0.55);
+  scene.fogDensity = 0.0018;
+  scene.fogColor = new Color3(0.85, 0.83, 0.78);
 
   lighting = { sun, ambient, shadow };
   return lighting;

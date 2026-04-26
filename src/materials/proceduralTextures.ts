@@ -80,6 +80,19 @@ const PALETTES: Record<string, MaterialColors> = {
   blue_paint: { base: [0.18, 0.34, 0.55], vary: [0.04, 0.04, 0.06] },
   // Palm-frond green; coarser variance fakes leaf clusters.
   palm_leaf:  { base: [0.30, 0.46, 0.18], vary: [0.10, 0.12, 0.08] },
+  // Whitewashed plaster — the dominant Dust 2 building face. Off-white,
+  // slightly warm. Variance suggests sun-bleached patches.
+  plaster_cream: { base: [0.86, 0.80, 0.70], vary: [0.06, 0.05, 0.04] },
+  // Warm red-orange brick — the "lower wall" colour around the buildings.
+  // Brighter and oranger than the existing cool 'brick' material.
+  red_brick:     { base: [0.62, 0.38, 0.28], vary: [0.10, 0.06, 0.05] },
+  // Mid-grey street concrete with subtle tonal variation. Painted
+  // lane lines come from a mesh band, not the texture.
+  road_concrete: { base: [0.55, 0.53, 0.50], vary: [0.05, 0.05, 0.05] },
+  // Light-grey painted curb (slightly cooler than road).
+  curb_stone:    { base: [0.78, 0.76, 0.72], vary: [0.04, 0.04, 0.04] },
+  // Mid-tone trim band used for parapet caps and door frames.
+  parapet:       { base: [0.66, 0.58, 0.46], vary: [0.04, 0.04, 0.04] },
 };
 
 function makeAlbedo(name: keyof typeof PALETTES, seed: number): Uint8Array {
@@ -105,7 +118,10 @@ function makeAlbedo(name: keyof typeof PALETTES, seed: number): Uint8Array {
   // Material-specific overlay details
   if (name === 'wood') overlayWoodGrain(data, seed);
   if (name === 'brick') overlayBrick(data, seed);
+  if (name === 'red_brick') overlayBrick(data, seed);
   if (name === 'sand_floor') overlaySandSpeckle(data, seed);
+  if (name === 'plaster_cream') overlayPlasterCracks(data, seed);
+  if (name === 'road_concrete') overlayRoadStreaks(data, seed);
   return data;
 }
 
@@ -155,6 +171,48 @@ function overlaySandSpeckle(data: Uint8Array, seed: number): void {
         data[i + 1] = clampByte((data[i + 1] ?? 0) - 25);
         data[i + 2] = clampByte((data[i + 2] ?? 0) - 20);
       }
+    }
+  }
+}
+
+/** Plaster overlay — sun-bleached cracks and grime patches. The cracks
+ *  follow a perlin-style pattern to look weathered rather than uniform. */
+function overlayPlasterCracks(data: Uint8Array, seed: number): void {
+  for (let y = 0; y < TEX_SIZE; y++) {
+    for (let x = 0; x < TEX_SIZE; x++) {
+      const u = x / TEX_SIZE, v = y / TEX_SIZE;
+      // Low-freq grime patches: darker stains in some regions.
+      const grime = fbm(u, v, seed + 41, 4, 4);
+      const grimeShift = grime < 0.40 ? -22 : grime > 0.65 ? 8 : 0;
+      // High-freq fine cracks: thin dark lines.
+      const crackBase = fbm(u * 2, v * 0.4, seed + 67, 3, 32);
+      const isCrack = crackBase > 0.62 && crackBase < 0.65;
+      const i = (y * TEX_SIZE + x) * 4;
+      const shift = isCrack ? -45 : grimeShift;
+      data[i + 0] = clampByte((data[i + 0] ?? 0) + shift);
+      data[i + 1] = clampByte((data[i + 1] ?? 0) + shift);
+      data[i + 2] = clampByte((data[i + 2] ?? 0) + shift * 0.9);
+    }
+  }
+}
+
+/** Road concrete overlay — long horizontal streaks (tire wear) plus
+ *  scattered darker patches. Clearly reads as a paved street. */
+function overlayRoadStreaks(data: Uint8Array, seed: number): void {
+  for (let y = 0; y < TEX_SIZE; y++) {
+    for (let x = 0; x < TEX_SIZE; x++) {
+      const u = x / TEX_SIZE, v = y / TEX_SIZE;
+      // Streaks: stretched noise along U.
+      const streak = fbm(u * 0.5, v * 4, seed + 19, 3, 8);
+      const streakShift = streak < 0.45 ? -12 : streak > 0.62 ? 6 : 0;
+      // Patches of lighter / darker concrete.
+      const patch = fbm(u, v, seed + 53, 3, 3);
+      const patchShift = patch < 0.40 ? -10 : patch > 0.65 ? 6 : 0;
+      const i = (y * TEX_SIZE + x) * 4;
+      const shift = streakShift + patchShift;
+      data[i + 0] = clampByte((data[i + 0] ?? 0) + shift);
+      data[i + 1] = clampByte((data[i + 1] ?? 0) + shift);
+      data[i + 2] = clampByte((data[i + 2] ?? 0) + shift);
     }
   }
 }
@@ -223,6 +281,13 @@ const ROUGH: Record<string, { base: number; var: number; normalStrength: number 
   concrete:   { base: 0.86, var: 0.10, normalStrength: 1.6 },
   dark_stone: { base: 0.84, var: 0.08, normalStrength: 1.6 },
   brick:      { base: 0.85, var: 0.10, normalStrength: 2.4 },
+  blue_paint: { base: 0.55, var: 0.08, normalStrength: 0.6 },
+  palm_leaf:  { base: 0.92, var: 0.05, normalStrength: 0.8 },
+  plaster_cream: { base: 0.90, var: 0.06, normalStrength: 1.4 },
+  red_brick:     { base: 0.86, var: 0.10, normalStrength: 2.4 },
+  road_concrete: { base: 0.78, var: 0.08, normalStrength: 1.0 },
+  curb_stone:    { base: 0.78, var: 0.06, normalStrength: 1.0 },
+  parapet:       { base: 0.88, var: 0.08, normalStrength: 1.2 },
 };
 
 export function getMaterialTextures(name: string): MaterialTextureSet {

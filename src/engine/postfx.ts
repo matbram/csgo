@@ -33,8 +33,8 @@ export function createPostFx(camera: Camera): DefaultRenderingPipeline {
   pipeline.imageProcessingEnabled = true;
   pipeline.imageProcessing.toneMappingEnabled = true;
   pipeline.imageProcessing.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
-  pipeline.imageProcessing.exposure = 1.0;
-  pipeline.imageProcessing.contrast = 1.05;
+  pipeline.imageProcessing.exposure = 1.10;
+  pipeline.imageProcessing.contrast = 1.12;
   // Warm color grading via vignette + small offsets.
   pipeline.imageProcessing.vignetteEnabled = true;
   pipeline.imageProcessing.vignetteWeight = 1.0;

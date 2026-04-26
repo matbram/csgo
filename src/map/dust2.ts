@@ -34,28 +34,66 @@ const FLOOR_THICK = 0.4;
 const WALL_THICK = 0.6;
 const WALL_HEIGHT = 5.0;
 const SKY_FLOOR_OFFSET = -FLOOR_THICK; // floors sit so their top is at y=0
+const BRICK_BASE_H = 1.10;             // red-brick base trim height
+const PARAPET_H = 0.32;                // parapet cap height
+const PARAPET_OVERHANG = 0.10;         // how far the cap sticks out laterally
+
+type FloorMat = 'sand_floor' | 'concrete' | 'dark_stone' | 'road_concrete' | 'curb_stone';
+type WallMat = 'sand_wall' | 'brick' | 'concrete' | 'plaster_cream' | 'red_brick';
 
 // A solid floor patch with top surface at y=0.
-function floor(name: string, cx: number, cz: number, sx: number, sz: number, mat: 'sand_floor' | 'concrete' | 'dark_stone' = 'sand_floor'): Block {
+function floor(name: string, cx: number, cz: number, sx: number, sz: number, mat: FloorMat = 'sand_floor'): Block {
+  const surface = mat === 'road_concrete' || mat === 'concrete' || mat === 'curb_stone' ? 'concrete' : 'sand';
   return box({
     name, size: [sx, FLOOR_THICK, sz], at: [cx, SKY_FLOOR_OFFSET, cz],
-    material: mat, surface: 'sand', walkable: true,
+    material: mat, surface, walkable: true,
   });
 }
 
-// A wall (axis-aligned along x by default; pass yaw=90 to rotate).
+/** A wall — Dust 2 styled. Internally this is a small group:
+ *  - main plaster body (the only solid block; preserves collision)
+ *  - red-brick base trim (cosmetic, sticks out slightly)
+ *  - parapet cap on top (cosmetic, sticks out further)
+ *
+ *  The default material reads as a whitewashed plaster building face;
+ *  pass `'sand_wall'` for the old look or `'red_brick'` for an all-brick
+ *  wall. Call sites don't need any changes — every existing wall in the
+ *  map automatically gets brick + parapet trim. */
 function wall(
   name: string,
   cx: number, cz: number,
   length: number,
   yawDeg = 0,
-  mat: 'sand_wall' | 'brick' | 'concrete' = 'sand_wall',
+  mat: WallMat = 'plaster_cream',
   height = WALL_HEIGHT,
 ): Block {
-  return box({
-    name, size: [length, height, WALL_THICK], at: [cx, 0, cz], yawDeg,
-    material: mat, surface: 'sand', walkable: false,
-  });
+  // Cap thickness goes slightly past the wall so it casts a visible shadow
+  // line. Brick base sits flush with the wall's lateral footprint.
+  const capDepth = WALL_THICK + 0.16;
+  const baseDepth = WALL_THICK + 0.10;
+  const useTrim = mat === 'plaster_cream'; // only the painted faces get brick trim
+  return group(`wall-${name}`, [cx, 0, cz], [
+    // Main wall — the solid collider. Surface tag stays 'sand' for footstep
+    // audio (close enough for plaster/brick on this map).
+    box({
+      name, size: [length, height, WALL_THICK], at: [0, 0, 0], yawDeg,
+      material: mat, surface: 'sand', walkable: false,
+    }),
+    ...(useTrim ? [
+      // Red-brick base trim. Non-solid so collision stays a single OBB.
+      box({
+        name: `${name}-base`, size: [length, BRICK_BASE_H, baseDepth], at: [0, 0, 0], yawDeg,
+        material: 'red_brick', surface: 'sand', solid: false,
+      }),
+    ] : []),
+    // Parapet cap. Slightly wider so it reads as a horizontal trim line.
+    box({
+      name: `${name}-cap`,
+      size: [length + PARAPET_OVERHANG * 2, PARAPET_H, capDepth],
+      at: [0, height, 0], yawDeg,
+      material: 'parapet', surface: 'sand', solid: false,
+    }),
+  ]);
 }
 
 // Raised platform — usable as cover or step-up.
@@ -66,13 +104,102 @@ function platform(name: string, cx: number, cz: number, sx: number, sy: number, 
   });
 }
 
-// A crate — chest-high cover.
+/** A military-style crate — wood body with metal banding around the
+ *  perimeter. Reads much closer to Dust 2's stenciled supply crates than
+ *  a plain wooden cube. The wooden core is the only solid block; the
+ *  bands are non-solid cosmetic strips. */
 function crate(cx: number, cz: number, size = 1.6): Block {
+  const bandT = 0.06;                  // band thickness (sticks out)
+  const bandW = 0.10;                  // band width
+  const halfH = size / 2;
+  return group(`crate-${cx.toFixed(0)}-${cz.toFixed(0)}`, [cx, 0, cz], [
+    // Wood core — the collider.
+    box({
+      name: 'crate', size: [size, size, size], at: [0, 0, 0],
+      material: 'wood', surface: 'wood', walkable: true,
+    }),
+    // Top + bottom bands (run along Z, full length on X face).
+    box({
+      name: 'crate-band-top-x', size: [size + bandT, bandW, size + bandT],
+      at: [0, size - bandW * 1.2, 0],
+      material: 'metal', surface: 'metal', solid: false,
+    }),
+    box({
+      name: 'crate-band-bot-x', size: [size + bandT, bandW, size + bandT],
+      at: [0, bandW * 0.2, 0],
+      material: 'metal', surface: 'metal', solid: false,
+    }),
+    // Vertical corner straps — four stems on the corners.
+    box({
+      name: 'crate-strap-fl', size: [bandW, size + bandT * 0.5, bandW],
+      at: [-halfH + bandW / 2, 0,  halfH - bandW / 2],
+      material: 'metal', surface: 'metal', solid: false,
+    }),
+    box({
+      name: 'crate-strap-fr', size: [bandW, size + bandT * 0.5, bandW],
+      at: [ halfH - bandW / 2, 0,  halfH - bandW / 2],
+      material: 'metal', surface: 'metal', solid: false,
+    }),
+    box({
+      name: 'crate-strap-bl', size: [bandW, size + bandT * 0.5, bandW],
+      at: [-halfH + bandW / 2, 0, -halfH + bandW / 2],
+      material: 'metal', surface: 'metal', solid: false,
+    }),
+    box({
+      name: 'crate-strap-br', size: [bandW, size + bandT * 0.5, bandW],
+      at: [ halfH - bandW / 2, 0, -halfH + bandW / 2],
+      material: 'metal', surface: 'metal', solid: false,
+    }),
+  ]);
+}
+
+/** A concrete road slab. Sits on top of the sand floor (top surface 1mm
+ *  above y=0 to avoid z-fighting). Walkable, no collision body — the
+ *  underlying sand floor handles the ground check. */
+function road(name: string, cx: number, cz: number, sx: number, sz: number, yawDeg = 0): Block {
+  const ROAD_THICK = 0.05;
   return box({
-    name: 'crate',
-    size: [size, size, size], at: [cx, 0, cz],
-    material: 'wood', surface: 'wood', walkable: true,
+    name, size: [sx, ROAD_THICK, sz], at: [cx, -ROAD_THICK + 0.001, cz], yawDeg,
+    material: 'road_concrete', surface: 'concrete', solid: false,
   });
+}
+
+/** Light-grey curb strip — a low painted edge along a road. Non-solid
+ *  (the road is flat) but visually breaks up the sand-to-road transition. */
+function curb(name: string, cx: number, cz: number, length: number, yawDeg = 0): Block {
+  return box({
+    name, size: [length, 0.10, 0.18], at: [cx, 0, cz], yawDeg,
+    material: 'curb_stone', surface: 'concrete', solid: false,
+  });
+}
+
+/** A tall background building facade. Stands behind the perimeter walls
+ *  to add vertical scale, like the multi-story plaster buildings around
+ *  the edges of real Dust 2. Solid (non-walkable). */
+function buildingFacade(name: string, cx: number, cz: number, length: number, height: number, yawDeg = 0): Block {
+  return group(`facade-${name}`, [cx, 0, cz], [
+    box({
+      name, size: [length, height, 1.0], at: [0, 0, 0], yawDeg,
+      material: 'plaster_cream', surface: 'sand', walkable: false,
+    }),
+    // Brick base
+    box({
+      name: `${name}-base`, size: [length, BRICK_BASE_H * 1.4, 1.10], at: [0, 0, 0], yawDeg,
+      material: 'red_brick', surface: 'sand', solid: false,
+    }),
+    // Parapet cap
+    box({
+      name: `${name}-cap`,
+      size: [length + 0.30, PARAPET_H * 1.5, 1.20], at: [0, height, 0], yawDeg,
+      material: 'parapet', surface: 'sand', solid: false,
+    }),
+    // Mid-band string course at ~60% height
+    box({
+      name: `${name}-mid`,
+      size: [length + 0.10, 0.25, 1.10], at: [0, height * 0.55, 0], yawDeg,
+      material: 'parapet', surface: 'sand', solid: false,
+    }),
+  ]);
 }
 
 // Palm tree — thin trunk plus a wider, flatter "crown" of fronds. The
@@ -175,11 +302,49 @@ export function dust2(): Block {
     // ---------------------------------------------------------------
     floor('world-floor', 0, 0, 110, 110, 'sand_floor'),
 
-    // Outer walls (bound the playable region loosely).
-    wall('outer-S', 0, -50, 110, 0, 'sand_wall'),
-    wall('outer-N', 0,  50, 110, 0, 'sand_wall'),
-    wall('outer-W', -55, 0, 100, 90, 'sand_wall'),
-    wall('outer-E',  55, 0, 100, 90, 'sand_wall'),
+    // ---------------------------------------------------------------
+    // Concrete street network. Lays a road slab on top of the sand
+    // wherever real Dust 2 has paved surfaces — mid corridor, long,
+    // outside long, A-cross, B-doors approach. The slab is non-solid
+    // (the underlying floor still handles ground checks) so it's a
+    // pure visual overlay with proper material.
+    // ---------------------------------------------------------------
+    road('road-mid',          0, -3, 9,  22),    // mid corridor
+    road('road-mid-doors',    0,  6, 5,   5),    // mid doors choke
+    road('road-ct-mid',       0, 12, 11,  9),    // CT mid open ground
+    road('road-a-cross',     19, 16, 17,  9),    // A cross / A site approach
+    road('road-long',        22, -4, 11, 26),    // long doors → A long
+    road('road-outside-long',22,-30, 11, 14),    // outside long
+    road('road-b-doors',    -12, 16, 6,   5),    // B doors approach
+
+    // Curb strips along the mid spine and long corridor — light-grey
+    // painted curbs that visually anchor the road in the sand.
+    curb('curb-mid-w',  -4.5, -3, 22, 0),
+    curb('curb-mid-e',   4.5, -3, 22, 0),
+    curb('curb-long-w', 16.5, -4, 26, 0),
+    curb('curb-long-e', 27.5, -4, 26, 0),
+
+    // ---------------------------------------------------------------
+    // Outer perimeter walls + tall multi-story background facades.
+    // The reference shows two- and three-story plaster buildings
+    // standing past the play boundary; these tall facades sell the
+    // vertical scale even though the player can't reach them.
+    // ---------------------------------------------------------------
+    wall('outer-S', 0, -50, 110, 0, 'plaster_cream'),
+    wall('outer-N', 0,  50, 110, 0, 'plaster_cream'),
+    wall('outer-W', -55, 0, 100, 90, 'plaster_cream'),
+    wall('outer-E',  55, 0, 100, 90, 'plaster_cream'),
+    // Background skyline buildings — set just outside the perimeter so
+    // they peek over the boundary walls in screen space.
+    buildingFacade('bg-N-1',  -22, 53, 30, 11.0, 0),
+    buildingFacade('bg-N-2',   12, 53, 24,  9.5, 0),
+    buildingFacade('bg-N-3',   38, 53, 18, 12.0, 0),
+    buildingFacade('bg-S-1',  -28, -53, 26, 9.0, 0),
+    buildingFacade('bg-S-2',   16, -53, 28, 10.5, 0),
+    buildingFacade('bg-W-1',  -58,  -8, 36, 11.5, 90),
+    buildingFacade('bg-W-2',  -58,  28, 28,  9.0, 90),
+    buildingFacade('bg-E-1',   58,  -4, 32, 10.5, 90),
+    buildingFacade('bg-E-2',   58,  32, 26,  9.5, 90),
 
     // ===============================================================
     // T SPAWN  (south-center, open area with elevated sniper platform)
