@@ -1,9 +1,11 @@
-/** Procedural humanoid mesh — torso, head, arms, legs as boxes/capsules.
+/** Procedural humanoid mesh — torso + head + legs + helmet/vest/arms.
  *  Used by all characters. The mesh is parented to a single TransformNode
  *  per character, so we move the node and the parts come along.
  *
  *  Materials are reused across characters of the same team. Only one
- *  TransformNode is moved per character per render frame. */
+ *  TransformNode is moved per character per render frame; the gear
+ *  meshes are static children and don't add to the per-frame matrix
+ *  cost beyond Babylon's parent walk. */
 
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
@@ -34,14 +36,40 @@ function getTeamMaterial(team: 'T' | 'CT'): StandardMaterial {
   return mat;
 }
 
-let darkSkin: StandardMaterial | null = null;
+const sharedMats = new Map<string, StandardMaterial>();
+function sharedMat(name: string, build: (m: StandardMaterial) => void): StandardMaterial {
+  const hit = sharedMats.get(name);
+  if (hit) return hit;
+  const m = new StandardMaterial(name, getScene());
+  build(m);
+  sharedMats.set(name, m);
+  return m;
+}
+
 function getSkinMaterial(): StandardMaterial {
-  if (darkSkin) return darkSkin;
-  const scene = getScene();
-  darkSkin = new StandardMaterial('skin', scene);
-  darkSkin.diffuseColor = new Color3(0.38, 0.28, 0.20);
-  darkSkin.specularColor = new Color3(0.06, 0.06, 0.06);
-  return darkSkin;
+  return sharedMat('skin', (m) => {
+    m.diffuseColor = new Color3(0.38, 0.28, 0.20);
+    m.specularColor = new Color3(0.06, 0.06, 0.06);
+  });
+}
+function getVestMaterial(): StandardMaterial {
+  return sharedMat('vest', (m) => {
+    m.diffuseColor = new Color3(0.10, 0.10, 0.11);
+    m.specularColor = new Color3(0.05, 0.05, 0.05);
+  });
+}
+function getHelmetMaterial(): StandardMaterial {
+  return sharedMat('helmet', (m) => {
+    m.diffuseColor = new Color3(0.18, 0.18, 0.20);
+    m.specularColor = new Color3(0.12, 0.12, 0.12);
+    m.specularPower = 32;
+  });
+}
+function getBootMaterial(): StandardMaterial {
+  return sharedMat('boot', (m) => {
+    m.diffuseColor = new Color3(0.06, 0.05, 0.04);
+    m.specularColor = new Color3(0.02, 0.02, 0.02);
+  });
 }
 
 export interface HumanoidParts {
@@ -49,6 +77,9 @@ export interface HumanoidParts {
   body: Mesh;
   head: Mesh;
   legs: Mesh;
+  /** Static gear children — kept on the parts list so disposeHumanoid
+   *  cleans them up. Not addressed individually after build. */
+  gear: Mesh[];
 }
 
 export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
@@ -57,6 +88,9 @@ export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
 
   const teamMat = getTeamMaterial(team);
   const skin = getSkinMaterial();
+  const vest = getVestMaterial();
+  const helmet = getHelmetMaterial();
+  const boot = getBootMaterial();
 
   // Torso — box. Positioned so its center is at base + 1.05 (between stomach top and chest top).
   const body = MeshBuilder.CreateBox(`hum-${name}-body`, { width: 0.55, height: 0.95, depth: 0.32 }, scene);
@@ -82,7 +116,41 @@ export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
   legs.receiveShadows = true;
   addShadowCaster(legs);
 
-  return { root, body, head, legs };
+  // ----- Gear: helmet, vest, pouches, shoulders, boots ----------------
+  // Each piece is a small box parented to the body part it should
+  // track (head for helmet, body for vest/shoulders/belt/pouches, root
+  // for boots). Crouch shrinks legs and lowers body+head; gear comes
+  // along automatically through its parent.
+  const gear: Mesh[] = [];
+  const part = (n: string, w: number, h: number, d: number, x: number, y: number, z: number, mat: StandardMaterial, parent: TransformNode): Mesh => {
+    const mesh = MeshBuilder.CreateBox(`hum-${name}-${n}`, { width: w, height: h, depth: d }, scene);
+    mesh.position = new Vector3(x, y, z);
+    mesh.material = mat;
+    mesh.parent = parent;
+    mesh.receiveShadows = true;
+    addShadowCaster(mesh);
+    gear.push(mesh);
+    return mesh;
+  };
+
+  // Helmet shell — flat box on top of the head. Parent: head.
+  part('helmet',     0.30, 0.13, 0.30,  0,  0.10, 0.00, helmet, head);
+  part('helmet-rim', 0.32, 0.04, 0.32,  0,  0.03, 0.00, helmet, head);
+
+  // Body armor — vest + plate + shoulders + belt + pouches. Parent: body.
+  part('vest',       0.58, 0.55, 0.36,  0,    0.15, 0.01, vest, body);
+  part('vest-plate', 0.30, 0.30, 0.04,  0,    0.15, 0.18, vest, body);
+  part('shoulder-l', 0.16, 0.16, 0.30, -0.27, 0.37, 0.00, vest, body);
+  part('shoulder-r', 0.16, 0.16, 0.30,  0.27, 0.37, 0.00, vest, body);
+  part('belt',       0.50, 0.06, 0.34,  0,   -0.13, 0.00, vest, body);
+  part('pouch-l',    0.10, 0.13, 0.10, -0.20, -0.21, 0.16, vest, body);
+  part('pouch-r',    0.10, 0.13, 0.10,  0.20, -0.21, 0.16, vest, body);
+
+  // Boots — at ground level, independent of crouch (parent: root, not legs).
+  part('boot-l',     0.20, 0.10, 0.30, -0.10,  0.06, 0.04, boot, root);
+  part('boot-r',     0.20, 0.10, 0.30,  0.10,  0.06, 0.04, boot, root);
+
+  return { root, body, head, legs, gear };
 }
 
 /** Sync a humanoid to a character's pose. Crouching shrinks the legs
@@ -111,5 +179,6 @@ export function disposeHumanoid(parts: HumanoidParts): void {
   parts.body.dispose();
   parts.head.dispose();
   parts.legs.dispose();
+  for (const g of parts.gear) g.dispose();
   parts.root.dispose();
 }

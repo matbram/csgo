@@ -15,7 +15,9 @@ export type MaterialName =
   | 'metal'
   | 'concrete'
   | 'dark_stone'
-  | 'brick';
+  | 'brick'
+  | 'blue_paint'
+  | 'palm_leaf';
 
 const cache = new Map<MaterialName, PBRMaterial>();
 

@@ -75,6 +75,11 @@ const PALETTES: Record<string, MaterialColors> = {
   concrete:   { base: [0.62, 0.60, 0.56], vary: [0.10, 0.10, 0.10] },
   dark_stone: { base: [0.30, 0.27, 0.24], vary: [0.12, 0.10, 0.08] },
   brick:      { base: [0.56, 0.34, 0.26], vary: [0.10, 0.06, 0.04] },
+  // The iconic A-site blue car. Slightly desaturated cyan with a hint
+  // of variance to look painted, not flat.
+  blue_paint: { base: [0.18, 0.34, 0.55], vary: [0.04, 0.04, 0.06] },
+  // Palm-frond green; coarser variance fakes leaf clusters.
+  palm_leaf:  { base: [0.30, 0.46, 0.18], vary: [0.10, 0.12, 0.08] },
 };
 
 function makeAlbedo(name: keyof typeof PALETTES, seed: number): Uint8Array {

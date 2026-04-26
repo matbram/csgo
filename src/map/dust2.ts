@@ -75,6 +75,98 @@ function crate(cx: number, cz: number, size = 1.6): Block {
   });
 }
 
+// Palm tree — thin trunk plus a wider, flatter "crown" of fronds. The
+// crown is solid (you can't walk through it) but only the trunk fills
+// the ground footprint; the crown floats above. Trees are skip-render
+// at long range via Babylon's frustum culling — `alwaysSelectAsActiveMesh`
+// is false in builder.ts.
+function palmTree(cx: number, cz: number, height = 5.0, yawDeg = 0): Block {
+  return group(`palm-${cx.toFixed(0)}-${cz.toFixed(0)}`, [cx, 0, cz], [
+    box({
+      name: 'palm-trunk',
+      size: [0.45, height, 0.45], at: [0, 0, 0], yawDeg,
+      material: 'wood', surface: 'wood', walkable: false,
+    }),
+    box({
+      name: 'palm-crown',
+      size: [3.0, 0.8, 3.0], at: [0, height - 0.2, 0], yawDeg,
+      material: 'palm_leaf', surface: 'wood', solid: false,
+    }),
+    box({
+      name: 'palm-crown-2',
+      size: [2.2, 0.5, 2.2], at: [0, height + 0.4, 0], yawDeg: yawDeg + 30,
+      material: 'palm_leaf', surface: 'wood', solid: false,
+    }),
+  ]);
+}
+
+// The iconic A-site blue car. Body + cabin + wheel arches. Modeled as
+// a static obstacle (chest-high cover, walkable on top so you can perch).
+function blueCar(cx: number, cz: number, yawDeg = 0): Block {
+  return group(`blue-car-${cx.toFixed(0)}-${cz.toFixed(0)}`, [cx, 0, cz], [
+    // Lower body
+    box({
+      name: 'car-body',
+      size: [1.7, 0.9, 4.0], at: [0, 0.30, 0], yawDeg,
+      material: 'blue_paint', surface: 'metal', walkable: true,
+    }),
+    // Cabin (greenhouse) — slightly narrower, sits on top
+    box({
+      name: 'car-cabin',
+      size: [1.55, 0.6, 2.0], at: [0, 1.20, -0.15], yawDeg,
+      material: 'blue_paint', surface: 'metal', walkable: true,
+    }),
+    // Front bumper
+    box({
+      name: 'car-bumper-f',
+      size: [1.7, 0.18, 0.20], at: [0, 0.18, 1.95], yawDeg,
+      material: 'metal', surface: 'metal', walkable: false,
+    }),
+    // Rear bumper
+    box({
+      name: 'car-bumper-r',
+      size: [1.7, 0.18, 0.20], at: [0, 0.18, -1.95], yawDeg,
+      material: 'metal', surface: 'metal', walkable: false,
+    }),
+  ]);
+}
+
+// B-site truck — taller and longer. Cargo bed walls so the truck reads
+// as something distinct from the car.
+function truck(cx: number, cz: number, yawDeg = 0): Block {
+  return group(`truck-${cx.toFixed(0)}-${cz.toFixed(0)}`, [cx, 0, cz], [
+    // Chassis / cargo floor
+    box({
+      name: 'truck-bed',
+      size: [2.2, 1.10, 5.0], at: [0, 0.40, 0], yawDeg,
+      material: 'metal', surface: 'metal', walkable: true,
+    }),
+    // Cabin
+    box({
+      name: 'truck-cab',
+      size: [2.2, 1.30, 1.6], at: [0, 1.50, 1.6], yawDeg,
+      material: 'metal', surface: 'metal', walkable: true,
+    }),
+    // Cargo bed sides (left/right walls of the bed)
+    box({
+      name: 'truck-bed-l',
+      size: [0.10, 0.8, 3.2], at: [-1.05, 1.40, -0.6], yawDeg,
+      material: 'wood', surface: 'wood', walkable: false,
+    }),
+    box({
+      name: 'truck-bed-r',
+      size: [0.10, 0.8, 3.2], at: [ 1.05, 1.40, -0.6], yawDeg,
+      material: 'wood', surface: 'wood', walkable: false,
+    }),
+    // Tailgate
+    box({
+      name: 'truck-tailgate',
+      size: [2.2, 0.8, 0.10], at: [0, 1.40, -2.20], yawDeg,
+      material: 'wood', surface: 'wood', walkable: false,
+    }),
+  ]);
+}
+
 export function dust2(): Block {
   return group('dust2', [0, 0, 0], [
     // ---------------------------------------------------------------
@@ -95,6 +187,10 @@ export function dust2(): Block {
     group('t-spawn', [0, 0, -38], [
       // Snipers' platform (elevated)
       platform('t-snipe', -6, -2, 6, 1.6, 4, 'wood'),
+      // Decorative palms in the south corners — read as a hot,
+      // bombed-out outdoor square.
+      palmTree(-9, -8, 5.5),
+      palmTree(8, -7, 5.0, 40),
       // Boxes for cover
       crate(2, 4),
       crate(4, 2),
@@ -176,6 +272,14 @@ export function dust2(): Block {
         crate(2, 0, 1.4),
         crate(2, 1.5, 1.4),
         crate(0, 4, 1.6),
+        // The iconic A-site blue car. Sits east of the default plant
+        // along Goose, providing chest-high cover from CT spawn /
+        // catwalk angles.
+        blueCar(4, -1, 90),
+        // Palm trees flanking the back of A site — visible from Long
+        // and CT spawn angles.
+        palmTree(-6, 5, 5.5),
+        palmTree(7, 5, 5.0, 25),
         // Goose (eastern alcove)
         wall('goose-w', 5, -2, 4, 90, 'sand_wall'),
         zone({ callout: 'A_SITE', polygon: [[-7, -4], [8, -4], [8, 6], [-7, 6]],
@@ -242,6 +346,9 @@ export function dust2(): Block {
     group('ct-spawn', [0, 0, 28], [
       wall('ct-w', -10, 0, 12, 90, 'sand_wall'),
       wall('ct-e',  10, 0, 12, 90, 'sand_wall'),
+      // Atmosphere palms in the back of CT spawn.
+      palmTree(-8, 6, 5.5),
+      palmTree(8, 6, 5.0, 60),
       crate(-4, 2),
       crate(4, -2),
       spawn({ team: 'CT', at: [-3, 0,  1], yawDeg: 180 }),
@@ -280,6 +387,11 @@ export function dust2(): Block {
         box({ name: 'b-window', size: [3, 1.4, 0.4], at: [4, 1.0, 4], material: 'sand_wall' }),
         // Fence (low cover)
         box({ name: 'b-fence', size: [4, 1.2, 0.3], at: [3, 0, -2], material: 'wood' }),
+        // The B-site truck — sits in the south-east of the site as a
+        // big piece of cover for defenders coming from B doors.
+        truck(3, -1, 0),
+        // Palm tree near the back wall, visible from tunnels.
+        palmTree(-6, 5, 5.0),
         // Crates
         crate(0, -2, 1.4),
         crate(2, 0, 1.4),
