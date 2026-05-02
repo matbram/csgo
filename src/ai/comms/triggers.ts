@@ -249,6 +249,10 @@ function emit(
   if (where === undefined && opts?.whereByPos) {
     where = ctx.world.calloutAt(pos.x, pos.y, pos.z) ?? null;
   }
+  // Personality.teamwork shrinks/grows the per-kind cooldown:
+  // teamwork=1 → ~0.6× (chatty support); teamwork=0 → ~1.4× (quiet
+  // lurker). Stays inside the comms-layer clamp.
+  const cooldownScale = 1.4 - 0.8 * bot.identity.personality.teamwork;
   const c = tryEmit({
     state: board.comms,
     bb: board,
@@ -262,6 +266,7 @@ function emit(
     enemyId: opts?.enemyId,
     count: opts?.count,
     nade: opts?.nade,
+    cooldownScale,
   });
   if (c) {
     playCalloutCue(c.kind, c.pos.x, c.pos.y, c.pos.z);

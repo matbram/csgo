@@ -42,6 +42,14 @@ function fakeBot(id: string, team: 'T' | 'CT', alive = true): Bot {
     brain,
     aiDisabled: false,
     commsLatencyMs: 0,
+    identity: {
+      name: id,
+      archetype: 'support',
+      personality: {
+        aggression: 0.5, patience: 0.5, teamwork: 0.5,
+        utilityIQ: 0.5, riskAversion: 0.5, adaptability: 0.5,
+      },
+    },
   };
 }
 

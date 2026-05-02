@@ -3,6 +3,7 @@
 
 import type { MatchState } from '../match/match';
 import type { Character } from '../entities/character';
+import type { Bot } from '../entities/bot';
 
 export class Scoreboard {
   private readonly el: HTMLDivElement;
@@ -21,18 +22,27 @@ export class Scoreboard {
 
   isVisible(): boolean { return this.visible; }
 
-  update(match: MatchState, characters: Character[]): void {
+  update(match: MatchState, characters: Character[], bots?: ReadonlyArray<Bot>): void {
     if (!this.visible) return;
     // Build rows.
     const aliveById = new Map<string, boolean>();
     for (const c of characters) aliveById.set(c.id, c.alive);
+    // Build a display-name lookup from the persistent bot identity so
+    // the player sees "Falcon" instead of "t-bot-1".
+    const nameById = new Map<string, string>();
+    if (bots) {
+      for (const b of bots) nameById.set(b.id, b.identity.name);
+    }
 
     const tRows: string[] = [];
     const ctRows: string[] = [];
 
     const players = [...match.players.values()];
     for (const p of players) {
-      const row = renderRow(p.id, aliveById.get(p.id) ?? false, p.kills, p.assists, p.deaths, p.money);
+      const row = renderRow(
+        p.id, nameById.get(p.id),
+        aliveById.get(p.id) ?? false, p.kills, p.assists, p.deaths, p.money,
+      );
       if (p.currentSide === 'T') tRows.push(row);
       else ctRows.push(row);
     }
@@ -61,8 +71,8 @@ export class Scoreboard {
   }
 }
 
-function renderRow(id: string, alive: boolean, k: number, a: number, d: number, money: number): string {
-  const display = id === 'local' ? 'You' : id;
+function renderRow(id: string, displayName: string | undefined, alive: boolean, k: number, a: number, d: number, money: number): string {
+  const display = id === 'local' ? 'You' : (displayName ?? id);
   return `
     <tr class="sb-row${alive ? '' : ' dead'}">
       <td class="name">${escapeHtml(display)}</td>

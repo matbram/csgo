@@ -150,6 +150,10 @@ export interface EmitInputs {
   enemyId?: string;
   count?: number;
   nade?: Callout['nade'];
+  /** Per-bot multiplier on the kind's cooldown. Lower = chattier;
+   *  higher = quieter. Driven by personality.teamwork in the trigger
+   *  layer. Bounded to a sane range to avoid pathological values. */
+  cooldownScale?: number;
 }
 
 /** Try to emit a callout. Returns the Callout if it landed, or null
@@ -165,7 +169,8 @@ export function tryEmit(input: EmitInputs): Callout | null {
     state.cooldowns.set(emitterId, perKind);
   }
   const lastEmit = perKind.get(kind);
-  if (lastEmit !== undefined && nowMs - lastEmit < COOLDOWN_BY_KIND[kind]) {
+  const scale = clampScale(input.cooldownScale ?? 1);
+  if (lastEmit !== undefined && nowMs - lastEmit < COOLDOWN_BY_KIND[kind] * scale) {
     return null;
   }
 
@@ -266,4 +271,9 @@ export function formatCallout(c: Callout): string {
 function formatCallout_where(c: CalloutId): string {
   // Callout ids are uppercase + underscores; humanise for the HUD.
   return c.toLowerCase().replace(/_/g, ' ');
+}
+
+function clampScale(s: number): number {
+  if (!Number.isFinite(s)) return 1;
+  return s < 0.4 ? 0.4 : s > 2.5 ? 2.5 : s;
 }

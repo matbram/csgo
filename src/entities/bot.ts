@@ -24,6 +24,7 @@ import { Perception } from '../ai/perception';
 import { Brain } from '../ai/brain';
 import { getDifficulty, withVariance, type DifficultyId } from '../ai/difficulty';
 import { debugLog } from '../engine/debugLog';
+import { getOrCreateIdentity, type BotIdentity } from '../ai/personality';
 
 /** Distance to a waypoint at which we consider it reached and advance to
  *  the next one. A bit larger than a cell so bots don't hover on each
@@ -60,6 +61,10 @@ export interface Bot {
    *  emits a callout this bot can act on it. The comms layer reads from
    *  here directly so it doesn't have to reach into Brain internals. */
   commsLatencyMs: number;
+  /** Persistent identity (display name + archetype + personality
+   *  scalars). Loaded from localStorage on first construction; stable
+   *  across rounds and (subject to localStorage) across sessions. */
+  identity: BotIdentity;
 }
 
 let nextBotId = 1;
@@ -114,6 +119,7 @@ export function createBot(
   const phaseMs = teamIdx * 11;
   const perception = new Perception(difficulty, phaseMs);
   const brain = new Brain(difficulty, phaseMs, id);
+  const identity = getOrCreateIdentity(id);
   return {
     id,
     character,
@@ -126,7 +132,12 @@ export function createBot(
     perception,
     brain,
     aiDisabled: false,
-    commsLatencyMs: difficulty.commsLatencyMs,
+    // Higher-teamwork bots have a slightly faster comms loop than the
+    // raw difficulty allows; lower-teamwork bots are slower (lurkers
+    // don't call). Multiplier in 0.6..1.4 around the difficulty
+    // baseline.
+    commsLatencyMs: difficulty.commsLatencyMs * (1.4 - 0.8 * identity.personality.teamwork),
+    identity,
   };
 }
 

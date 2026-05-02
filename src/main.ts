@@ -61,6 +61,7 @@ import { buildWorldStateView, type WorldStateView } from './ai/world/state';
 import { buildTacticalGraph, type TacticalGraph } from './ai/world/tacticalGraph';
 import { dust2Overlay } from './ai/world/tacticalOverlay.dust2';
 import { installCommsTriggers, tickComms, setCommsSimNow, applyCommsIntel } from './ai/comms/triggers';
+import { installReactive, tickReactive } from './ai/reactive';
 import { resetComms } from './ai/comms/callouts';
 import { CalloutFeedHud } from './hud/calloutFeed';
 import type { Character } from './entities/character';
@@ -203,6 +204,7 @@ function bootstrap(): void {
   const botById = new Map<string, Bot>();
   for (const b of bots) botById.set(b.id, b);
   installCommsTriggers({ botById, tBoard, ctBoard, world });
+  installReactive();
 
   // Compute spawn centroids once — used by the bot Save state to pick
   // a retreat target. Spawn polygons aren't authored separately, so we
@@ -913,6 +915,15 @@ function bootstrap(): void {
         // each tick so a transition out of save restores the strategist's
         // original objective even if the brain didn't write it back.
         applyBotObjectiveFromBoard(bot, board, spawnPos);
+        // Reactive reflexes (flash / damage flinch / molly / panic)
+        // run BEFORE the brain step. They mutate controller state and
+        // can override the bot's objective; the brain decides on top
+        // of whatever the reactive layer left.
+        tickReactive(bot, {
+          fire: grenadeSystem.fire,
+          spawnByTeam: { T: tSpawnCentroid, CT: ctSpawnCentroid },
+          panicEnabled: (b) => settings.get().difficulty === 'easy' && b.identity.personality.riskAversion > 0.4,
+        }, enemies, time.simMs);
         const decision = bot.brain.step(bot, bot.perception, brainCtx, firing, dtMs, time.simMs);
         stepBot(bot, dtMs, time.simMs, pathService, {
           followPath: decision.followPath,
@@ -1192,7 +1203,7 @@ function bootstrap(): void {
     flashOverlay.update(localPlayer.character, time.simMs);
     matchEndHud.update(match);
     roundHud.update(match, characters, time.simMs);
-    scoreboard.update(match, characters);
+    scoreboard.update(match, characters, bots);
     bombHud.update(localPlayer.character, match.round?.bomb ?? null, world);
   });
 

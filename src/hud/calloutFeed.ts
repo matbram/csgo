@@ -72,9 +72,10 @@ export class CalloutFeedHud {
       const oldest = this.rows.shift();
       oldest?.el.remove();
     }
+    const speakerBot = bots.find(b => b.id === c.emitterId);
     const speaker = c.emitterId === 'local'
       ? 'YOU'
-      : bots.find(b => b.id === c.emitterId)?.id ?? c.emitterId;
+      : speakerBot?.identity.name ?? c.emitterId;
     const teamCls = c.side === 'T' ? 't' : 'ct';
     const el = document.createElement('div');
     el.className = `callout-row ${teamCls}`;
