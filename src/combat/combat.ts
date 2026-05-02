@@ -17,6 +17,12 @@ import type { SmokeField } from '../grenades/smokeField';
 import { debugLog } from '../engine/debugLog';
 
 const MAX_RANGE_M = 120;
+/** Cumulative HP damage to a limb before it tears off the victim while
+ *  they're still alive. Calibrated so an AWP body shot to the leg
+ *  (≈ 80 hp before armour) is one-shot, an AK takes two leg hits, and
+ *  a pistol takes 3-4 — feels like the limb gives way under sustained
+ *  punishment without making every spray dismember someone. */
+const LIMB_DETACH_THRESHOLD = 60;
 
 export interface FireOptions {
   /** Origin of the bullet (eye position). */
@@ -188,6 +194,7 @@ export class CombatSystem {
       const corpseHit = !bestVictimWasAlive;
       let hpDelta = 0;
       let killing = false;
+      let limbDetached: 'leg' | 'arm' | null = null;
       if (!corpseHit) {
         const damageMul = opts.damageMul ?? 1;
         const dmg = computeDamage({
@@ -202,6 +209,26 @@ export class CombatSystem {
         bestVictim.armor = Math.max(0, bestVictim.armor - dmg.armorDamage);
         if (dmg.helmetDestroyed) bestVictim.helmet = false;
         killing = bestVictim.hp <= 0;
+
+        // Cumulative limb damage. Crossing the detach threshold rips
+        // the limb off mid-fight — the victim doesn't have to die for
+        // a leg/arm to come off, just take enough punishment to that
+        // limb. We only count ACTUAL hp damage (hpDelta) so armour
+        // soaking absorbs limb damage too.
+        if (bestKind === 'leg' && !bestVictim.legDetached) {
+          bestVictim.legDamage += hpDelta;
+          if (bestVictim.legDamage >= LIMB_DETACH_THRESHOLD) {
+            bestVictim.legDetached = true;
+            limbDetached = 'leg';
+          }
+        } else if (bestKind === 'arm' && !bestVictim.armDetached) {
+          bestVictim.armDamage += hpDelta;
+          if (bestVictim.armDamage >= LIMB_DETACH_THRESHOLD) {
+            bestVictim.armDetached = true;
+            limbDetached = 'arm';
+          }
+        }
+
         if (killing) bestVictim.alive = false;
       }
 
@@ -214,6 +241,7 @@ export class CombatSystem {
         headshot: bestKind === 'head',
         killing,
         corpseHit,
+        limbDetached,
         hitX: bestPoint.x, hitY: bestPoint.y, hitZ: bestPoint.z,
         victimFootY: bestVictim.pos.y,
         dirX: finalDir.x, dirY: finalDir.y, dirZ: finalDir.z,

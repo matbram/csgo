@@ -14,6 +14,9 @@ export interface ShooterMotion {
   /** True if currently airborne. */
   inAir: boolean;
   crouching: boolean;
+  /** Shooting one-handed. Adds a flat cone so even a stationary
+   *  one-armed shooter can't hold a tight aim. */
+  armDetached?: boolean;
 }
 
 /** Inaccuracy in degrees (half-angle of error cone).
@@ -25,8 +28,12 @@ export interface ShooterMotion {
  *  spray pattern's per-shot offset still cause shots to drift; what's
  *  removed is the gun's random base-cone wiggle while perfectly still. */
 export function computeInaccuracy(def: WeaponDef, motion: ShooterMotion): number {
+  // Lost an arm → big flat cone added to whatever else is going on.
+  // We compute it once and add to the result so it stacks with movement
+  // and air penalties.
+  const armPenaltyDeg = motion.armDetached ? 2.5 : 0;
   const stationary = motion.speed < 1.0 && !motion.inAir;
-  if (stationary) return 0;
+  if (stationary) return armPenaltyDeg;
 
   // Base inaccuracy (also affected by crouch). Only contributes when
   // moving or airborne — see the early return above.
@@ -45,5 +52,5 @@ export function computeInaccuracy(def: WeaponDef, motion: ShooterMotion): number
     acc += def.jumpingInaccuracyMul * 0.05;
   }
 
-  return acc;
+  return acc + armPenaltyDeg;
 }

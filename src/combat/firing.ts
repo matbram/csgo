@@ -131,6 +131,7 @@ export class FiringController {
       speed: shooter.speed,
       inAir: shooter.inAir,
       crouching: shooter.crouching,
+      armDetached: shooter.armDetached,
     });
     if (inst.scopeLevel > 0 && inst.def.scopedInaccuracyMul !== undefined) {
       inacc *= inst.def.scopedInaccuracyMul;

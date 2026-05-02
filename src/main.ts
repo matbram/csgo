@@ -560,9 +560,13 @@ function bootstrap(): void {
     const rX = Math.cos(yaw), rZ = -Math.sin(yaw);
 
     const inst = currentInstance(localPlayer);
-    const speedScale = (inst && inst.scopeLevel > 0 && inst.def.scopedMoveSpeedScale !== undefined)
+    let speedScale = (inst && inst.scopeLevel > 0 && inst.def.scopedMoveSpeedScale !== undefined)
       ? inst.def.scopedMoveSpeedScale
       : (inst?.def.moveSpeedScale ?? 1.0);
+    // Lost-leg impairment: half-speed limp once a leg's been blown
+    // off. Stacks multiplicatively with whatever weapon-driven scale
+    // is already active.
+    if (localPlayer.character.legDetached) speedScale *= 0.5;
     const wishX = fX * forward + rX * strafe;
     const wishZ = fZ * forward + rZ * strafe;
 

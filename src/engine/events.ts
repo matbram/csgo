@@ -46,6 +46,13 @@ export interface EventMap {
      *  applied is 0, no kill credit, but visuals still fire the
      *  full gore stack (gibs + blood) so corpses can be mutilated. */
     corpseHit: boolean;
+    /** Set to 'leg' or 'arm' when this hit pushed the cumulative
+     *  per-limb damage past the detach threshold, even on a non-
+     *  killing shot. The visuals layer treats this the same as a
+     *  killing hit for that limb — clones the limb out as a flying
+     *  gib while the victim continues to fight (slower / less
+     *  accurate). */
+    limbDetached: 'leg' | 'arm' | null;
     hitX: number; hitY: number; hitZ: number;
     /** Victim's foot Y at the time of impact — used by blood-decal
      *  visuals to drop a pool on the surface they're standing on. */

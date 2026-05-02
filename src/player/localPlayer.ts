@@ -60,6 +60,10 @@ export class LocalPlayer {
       speed: 0,
       inAir: false,
       crouching: false,
+      legDamage: 0,
+      armDamage: 0,
+      legDetached: false,
+      armDetached: false,
     };
     this.ownCharacter = this.character;
     this.syncFromController();

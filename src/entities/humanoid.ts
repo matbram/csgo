@@ -102,6 +102,45 @@ export interface HumanoidParts {
    *  name patterns to pull pieces (e.g. helmet shell) along with the
    *  body part they're sitting on. */
   gear: Mesh[];
+  /** Anchor for whatever weapon the character is holding. Always
+   *  exists; its children swap when the character switches weapons. */
+  weaponAnchor: TransformNode;
+  /** Anchor at the muzzle of the currently-equipped weapon. The combat
+   *  visuals layer reads its absolute position to spawn muzzle-flash
+   *  particles in the right place. */
+  weaponMuzzle: TransformNode;
+  /** Meshes belonging to the currently-equipped weapon. Replaced when
+   *  the active weapon changes — disposed first so we don't leak. */
+  weaponMeshes: Mesh[];
+  /** Weapon category currently visible on the body — primary/secondary/
+   *  knife use different geometries. Tracked here to avoid rebuilding
+   *  the mesh every frame. */
+  weaponCategory: 'rifle' | 'pistol' | 'sniper' | 'knife' | 'grenade' | null;
+}
+
+/** Style materials for the bot weapon meshes — separate from the
+ *  view-model materials so we don't import the player viewModel
+ *  module just for a couple of colours. */
+function getBotWeaponMaterials(): {
+  metal: StandardMaterial;
+  polymer: StandardMaterial;
+  wood: StandardMaterial;
+} {
+  return {
+    metal: sharedMat('botgun-metal', (m) => {
+      m.diffuseColor = new Color3(0.16, 0.16, 0.18);
+      m.specularColor = new Color3(0.3, 0.3, 0.32);
+      m.specularPower = 64;
+    }),
+    polymer: sharedMat('botgun-polymer', (m) => {
+      m.diffuseColor = new Color3(0.08, 0.08, 0.08);
+      m.specularColor = new Color3(0.05, 0.05, 0.05);
+    }),
+    wood: sharedMat('botgun-wood', (m) => {
+      m.diffuseColor = new Color3(0.40, 0.26, 0.15);
+      m.specularColor = new Color3(0.05, 0.05, 0.05);
+    }),
+  };
 }
 
 export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
@@ -191,6 +230,17 @@ export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
   addGear(part('shoulder-l', 0.16, 0.10, 0.16,  0,    0.20, 0, vest, luArm));
   addGear(part('shoulder-r', 0.16, 0.10, 0.16,  0,    0.20, 0, vest, ruArm));
 
+  // Weapon anchor: a TransformNode parented to the bot's torso, sitting
+  // on the right side at chest height pointing forward. Weapon meshes
+  // (built via setHumanoidWeapon) live as children. Pose-sync moves
+  // the anchor along with the torso during crouch.
+  const weaponAnchor = new TransformNode(`hum-${name}-weapon`, scene);
+  weaponAnchor.parent = torso;
+  weaponAnchor.position.set(0.30, -0.05, 0.05);
+  const weaponMuzzle = new TransformNode(`hum-${name}-muzzle`, scene);
+  weaponMuzzle.parent = weaponAnchor;
+  weaponMuzzle.position.set(0, 0, 0.5);
+
   return {
     root, head, torso, pelvis,
     leftUpperArm: luArm, leftForearm: lfArm,
@@ -198,7 +248,82 @@ export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
     leftThigh: lThigh, leftShin: lShin, leftFoot: lFoot,
     rightThigh: rThigh, rightShin: rShin, rightFoot: rFoot,
     gear,
+    weaponAnchor,
+    weaponMuzzle,
+    weaponMeshes: [],
+    weaponCategory: null,
   };
+}
+
+/** Build a low-detail weapon visual for a bot and parent it to their
+ *  weapon anchor. Idempotent with the parts.weaponCategory check —
+ *  rebuilds only when the category actually changes (calling this
+ *  every frame is cheap when the bot keeps the same weapon). */
+export function setHumanoidWeapon(
+  parts: HumanoidParts,
+  category: 'rifle' | 'pistol' | 'sniper' | 'knife' | 'grenade' | null,
+): void {
+  if (parts.weaponCategory === category) return;
+  // Tear down whatever was there.
+  for (const m of parts.weaponMeshes) m.dispose();
+  parts.weaponMeshes = [];
+  parts.weaponCategory = category;
+  if (!category) return;
+
+  const scene = getScene();
+  const m = getBotWeaponMaterials();
+  const anchor = parts.weaponAnchor;
+  const built: Mesh[] = [];
+
+  const box = (name: string, w: number, h: number, d: number, x: number, y: number, z: number, mat: StandardMaterial): Mesh => {
+    const mesh = MeshBuilder.CreateBox(`${anchor.name}-${name}`, { width: w, height: h, depth: d }, scene);
+    mesh.position.set(x, y, z);
+    mesh.material = mat;
+    mesh.parent = anchor;
+    mesh.isPickable = false;
+    mesh.receiveShadows = false;
+    addShadowCaster(mesh);
+    built.push(mesh);
+    return mesh;
+  };
+
+  if (category === 'rifle') {
+    box('body',     0.06, 0.08, 0.50,  0,  0.00, 0.10, m.metal);
+    box('barrel',   0.03, 0.03, 0.34,  0,  0.012, 0.45, m.metal);
+    box('stock',    0.05, 0.07, 0.18,  0, -0.02, -0.15, m.wood);
+    box('mag',      0.05, 0.10, 0.05,  0, -0.10,  0.05, m.polymer);
+    box('grip',     0.04, 0.08, 0.04,  0, -0.07, -0.03, m.polymer);
+    parts.weaponMuzzle.position.set(0, 0.012, 0.65);
+  } else if (category === 'sniper') {
+    box('body',     0.06, 0.08, 0.55,  0,  0.00, 0.10, m.metal);
+    box('barrel',   0.03, 0.03, 0.55,  0,  0.012, 0.55, m.metal);
+    box('scope',    0.04, 0.05, 0.16,  0,  0.07,  0.12, m.metal);
+    box('stock',    0.06, 0.07, 0.22,  0, -0.02, -0.18, m.wood);
+    box('mag',      0.05, 0.06, 0.10,  0, -0.07,  0.05, m.polymer);
+    parts.weaponMuzzle.position.set(0, 0.012, 0.86);
+  } else if (category === 'pistol') {
+    box('slide',    0.04, 0.05, 0.18,  0,  0.02, 0.06, m.metal);
+    box('frame',    0.04, 0.07, 0.05,  0, -0.03, 0.00, m.polymer);
+    box('grip',     0.04, 0.10, 0.04,  0, -0.08, -0.02, m.polymer);
+    parts.weaponMuzzle.position.set(0, 0.02, 0.16);
+  } else if (category === 'knife') {
+    box('blade',    0.03, 0.02, 0.20,  0,  0.00, 0.10, m.metal);
+    box('grip',     0.04, 0.03, 0.10,  0,  0.00, -0.04, m.wood);
+    parts.weaponMuzzle.position.set(0, 0, 0.20);
+  } else {
+    // grenade: a tiny sphere stand-in. Bots rarely show this on their
+    // body but we still build it so the muzzle anchor is sane.
+    const sphere = MeshBuilder.CreateSphere(`${anchor.name}-grenade`, { diameter: 0.10, segments: 6 }, scene);
+    sphere.parent = anchor;
+    sphere.position.set(0, 0, 0.05);
+    sphere.material = m.polymer;
+    sphere.isPickable = false;
+    addShadowCaster(sphere);
+    built.push(sphere);
+    parts.weaponMuzzle.position.set(0, 0, 0.10);
+  }
+
+  parts.weaponMeshes = built;
 }
 
 /** Sync a humanoid to a character's pose. Crouch is approximated by
@@ -264,6 +389,9 @@ export function disposeHumanoid(parts: HumanoidParts): void {
   parts.rightShin.dispose();
   parts.rightFoot.dispose();
   for (const g of parts.gear) g.dispose();
+  for (const m of parts.weaponMeshes) m.dispose();
+  parts.weaponMuzzle.dispose();
+  parts.weaponAnchor.dispose();
   parts.root.dispose();
 }
 

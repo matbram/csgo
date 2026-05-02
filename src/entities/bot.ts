@@ -12,9 +12,9 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Character } from './character';
 import { CharacterController, DEFAULT_TUNABLES } from '../player/controller';
 import type { WorldQuery } from '../player/physics';
-import { defaultInventory } from '../weapons/inventory';
+import { defaultInventory, activeInstance } from '../weapons/inventory';
 import {
-  createHumanoid, syncHumanoidPose, disposeHumanoid,
+  createHumanoid, syncHumanoidPose, disposeHumanoid, setHumanoidWeapon,
   type HumanoidParts,
 } from './humanoid';
 import type { PathPoint } from '../nav/astar';
@@ -97,6 +97,10 @@ export function createBot(
     speed: 0,
     inAir: false,
     crouching: false,
+    legDamage: 0,
+    armDamage: 0,
+    legDetached: false,
+    armDetached: false,
   };
   syncHumanoidPose(parts, character.pos.x, character.pos.y, character.pos.z, character.yaw, character.currentEye, character.currentHeight);
 
@@ -284,13 +288,19 @@ export function stepBot(
 
 function activeMoveSpeedScale(bot: Bot): number {
   const inv = bot.character.inventory!;
+  let scale: number;
   switch (inv.active) {
-    case 'primary':   return inv.primary?.def.moveSpeedScale ?? 1;
-    case 'secondary': return inv.secondary?.def.moveSpeedScale ?? 1;
-    case 'knife':     return inv.knife.def.moveSpeedScale;
-    case 'c4':        return inv.c4?.def.moveSpeedScale ?? 1;
-    case 'grenade':   return inv.grenades[inv.activeGrenadeIdx]?.def.moveSpeedScale ?? 1;
+    case 'primary':   scale = inv.primary?.def.moveSpeedScale ?? 1; break;
+    case 'secondary': scale = inv.secondary?.def.moveSpeedScale ?? 1; break;
+    case 'knife':     scale = inv.knife.def.moveSpeedScale; break;
+    case 'c4':        scale = inv.c4?.def.moveSpeedScale ?? 1; break;
+    case 'grenade':   scale = inv.grenades[inv.activeGrenadeIdx]?.def.moveSpeedScale ?? 1; break;
   }
+  // Limping bot: a leg-detached bot moves half-speed too. They keep
+  // pathing toward objectives but won't out-run anyone, which is what
+  // you'd expect after losing a leg.
+  if (bot.character.legDetached) scale *= 0.5;
+  return scale;
 }
 
 /** Exponentially smooth yaw toward the desired heading along the shortest
@@ -303,8 +313,9 @@ function smoothYaw(current: number, target: number, dtMs: number): number {
   return current + diff * k;
 }
 
-/** Per render-frame: position + orient the humanoid mesh. Tipped-over
- *  pose for dead bots — same look as the legacy dummies. */
+/** Per render-frame: position + orient the humanoid mesh, and sync
+ *  the visible weapon to whatever the bot currently has equipped.
+ *  Tipped-over pose for dead bots. */
 export function syncBotMesh(bot: Bot): void {
   const c = bot.character;
   if (!c.alive) {
@@ -313,6 +324,22 @@ export function syncBotMesh(bot: Bot): void {
     return;
   }
   syncHumanoidPose(bot.parts, c.pos.x, c.pos.y, c.pos.z, c.yaw, c.currentEye, c.currentHeight);
+
+  // Pick a category for the weapon visual based on the active slot.
+  // setHumanoidWeapon is idempotent on category, so calling it every
+  // frame only allocates when the bot actually swaps weapons.
+  let category: 'rifle' | 'pistol' | 'sniper' | 'knife' | 'grenade' | null = null;
+  if (c.inventory) {
+    const inst = activeInstance(c.inventory);
+    const cat = inst.def.category;
+    if (cat === 'rifle' || cat === 'smg' || cat === 'lmg' || cat === 'shotgun') category = 'rifle';
+    else if (cat === 'pistol') category = 'pistol';
+    else if (cat === 'sniper') category = 'sniper';
+    else if (cat === 'knife') category = 'knife';
+    else if (cat === 'grenade') category = 'grenade';
+    else category = null;     // bomb / nothing visible
+  }
+  setHumanoidWeapon(bot.parts, category);
 }
 
 export function disposeBot(bot: Bot): void {

@@ -37,6 +37,19 @@ export interface Character {
    *  values mean "not flashed". Both the local player overlay and the
    *  bot perception flash-degrade hook off this. */
   flashedUntilMs?: number;
+
+  /** Cumulative limb damage trackers — a single big shot or several
+   *  smaller ones to a limb eventually crosses the detach threshold,
+   *  even if the character survives. We only track one side per type
+   *  (left vs right is picked at detach time inside the humanoid). */
+  legDamage: number;
+  armDamage: number;
+  /** True after the matching limb is permanently detached for the
+   *  remainder of the round. Reset by resetCharacterForRound. The
+   *  movement controller and firing inaccuracy code read these to
+   *  apply impairment penalties. */
+  legDetached: boolean;
+  armDetached: boolean;
 }
 
 export function hitboxPose(c: Character): HitboxPose {

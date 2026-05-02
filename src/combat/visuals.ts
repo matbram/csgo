@@ -469,11 +469,24 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
   muzzleParticles.maxAngularSpeed = Math.PI;
   muzzleParticles.start();
 
-  events.on('combat:fire', ({ ox, oy, oz, weapon }) => {
+  events.on('combat:fire', ({ shooterId, ox, oy, oz, weapon }) => {
     if (!muzzleParticles) return;
     // No muzzle flash for melee — there's no muzzle.
     if (weapon === 'knife') return;
-    muzzleParticles.emitter = new Vector3(ox, oy, oz);
+    // For bots we have a real weapon mesh attached to the humanoid.
+    // Reading its muzzle anchor's absolute position puts the flash on
+    // the actual gun, not at the bot's eye. Local player keeps eye-
+    // space — the player view-model already lines its muzzle up with
+    // the camera.
+    let mx = ox, my = oy, mz = oz;
+    if (shooterId !== 'local' && partsForId) {
+      const parts = partsForId(shooterId);
+      if (parts) {
+        const mp = parts.weaponMuzzle.getAbsolutePosition();
+        mx = mp.x; my = mp.y; mz = mp.z;
+      }
+    }
+    muzzleParticles.emitter = new Vector3(mx, my, mz);
     muzzleParticles.manualEmitCount = 6;
   });
 
@@ -507,13 +520,13 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
   events.on('combat:hit', ({
     hitX, hitY, hitZ, victimFootY,
     dirX, dirY, dirZ,
-    headshot, killing, corpseHit, hitbox, victimId,
+    headshot, killing, corpseHit, limbDetached, hitbox, victimId,
   }) => {
     if (!bloodParticles) return;
-    // Treat corpse hits the same as killing hits for visuals: heavy
-    // blood, multiple ground decals, wall splatter, and another chunk
-    // ripped off. The user wanted to be able to mutilate bodies.
-    const dismember = killing || corpseHit;
+    // Treat corpse hits and in-flight limb detachments the same as
+    // killing hits for visuals: heavy blood, multiple ground decals,
+    // wall splatter, and a piece torn off.
+    const dismember = killing || corpseHit || limbDetached !== null;
 
     // 1) Particle spurt. Heavy on headshots / killing / corpse hits.
     bloodParticles.emitter = new Vector3(hitX, hitY, hitZ);
@@ -561,8 +574,14 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
     if (dismember && partsForId) {
       const parts = partsForId(victimId);
       if (parts) {
+        // If we're tearing a limb mid-fight, the hit might have been
+        // recorded as 'leg'/'arm' but the explicit `limbDetached`
+        // signal wins — that's the one combat.fire decided crossed
+        // the threshold. Otherwise fall back to the hitbox kind.
         const partKind: 'head' | 'arm' | 'leg' | 'chest' =
-          hitbox === 'head' ? 'head'
+          limbDetached === 'leg' ? 'leg'
+          : limbDetached === 'arm' ? 'arm'
+          : hitbox === 'head' ? 'head'
           : hitbox === 'leg' ? 'leg'
           : hitbox === 'arm' ? 'arm'
           : 'chest';

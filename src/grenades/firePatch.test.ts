@@ -12,6 +12,7 @@ function makeChar(id: string, x: number, z: number): Character {
     hp: 100, armor: 0, helmet: false, hasKit: false, alive: true,
     inventory: null,
     speed: 0, inAir: false, crouching: false,
+    legDamage: 0, armDamage: 0, legDetached: false, armDetached: false,
   };
 }
 
