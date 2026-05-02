@@ -11,7 +11,7 @@
 
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Character } from '../entities/character';
-import { hitboxPose } from '../entities/character';
+import { hitboxPose, rollSegmentSeverance } from '../entities/character';
 import type { World } from '../map/world';
 import type { WorldQuery } from '../player/physics';
 import { events } from '../engine/events';
@@ -315,29 +315,39 @@ export class GrenadeSystem {
       const hpDelta = c.armor > 0 ? Math.max(0, damage - armorTake) : damage;
       c.armor = Math.max(0, c.armor - armorTake);
       c.hp = Math.max(0, c.hp - hpDelta);
-      if (c.hp <= 0) {
-        c.alive = false;
+      const killing = c.hp <= 0;
+      if (killing) c.alive = false;
+
+      // Per-segment explosive severance. Severance probability scales
+      // with the (pre-armor) blast intensity — extremities pop first,
+      // proximal segments need a closer hit. The trauma counter still
+      // accumulates on failed rolls so a near-miss may compromise a
+      // limb for follow-up shots. We base the roll on the raw blast
+      // damage (not hpDelta) because shrapnel doesn't really care
+      // about a Kevlar vest covering the torso.
+      const limbsDetached = rollSegmentSeverance(c, damage);
+
+      // Grenade damage has no aimed direction — pick a synthetic one
+      // pointing radially outward from the explosion so the blood
+      // visual sprays away from the blast.
+      const inv = dist > 1e-3 ? 1 / dist : 0;
+      events.emit('combat:hit', {
+        attackerId: g.throwerId, victimId: c.id, weapon: 'he',
+        hitbox: 'chest', segment: 'chest', side: null,
+        damage: hpDelta, headshot: false, killing,
+        corpseHit: false,
+        limbsDetached,
+        hitX: tx, hitY: ty, hitZ: tz,
+        victimFootY: c.pos.y,
+        dirX: (tx - g.pos.x) * inv,
+        dirY: (ty - g.pos.y) * inv,
+        dirZ: (tz - g.pos.z) * inv,
+        distance: dist, tMs: nowMs,
+      });
+      if (killing) {
         events.emit('combat:kill', {
           attackerId: g.throwerId, victimId: c.id, weapon: 'he',
           headshot: false, tMs: nowMs,
-        });
-      } else {
-        // Grenade damage has no aimed direction — pick a synthetic one
-        // pointing radially outward from the explosion so the blood
-        // visual sprays away from the blast.
-        const inv = dist > 1e-3 ? 1 / dist : 0;
-        events.emit('combat:hit', {
-          attackerId: g.throwerId, victimId: c.id, weapon: 'he',
-          hitbox: 'chest', segment: 'chest', side: null,
-          damage: hpDelta, headshot: false, killing: false,
-          corpseHit: false,
-          limbDetached: null,
-          hitX: tx, hitY: ty, hitZ: tz,
-          victimFootY: c.pos.y,
-          dirX: (tx - g.pos.x) * inv,
-          dirY: (ty - g.pos.y) * inv,
-          dirZ: (tz - g.pos.z) * inv,
-          distance: dist, tMs: nowMs,
         });
       }
     }

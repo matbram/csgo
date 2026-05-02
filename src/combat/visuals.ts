@@ -535,13 +535,13 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
   events.on('combat:hit', ({
     hitX, hitY, hitZ, victimFootY,
     dirX, dirY, dirZ,
-    headshot, killing, corpseHit, limbDetached, segment, side, victimId,
+    headshot, killing, corpseHit, limbsDetached, segment, side, victimId,
   }) => {
     if (!bloodParticles) return;
     // Treat corpse hits and in-flight limb detachments the same as
     // killing hits for visuals: heavy blood, multiple ground decals,
-    // wall splatter, and a piece torn off.
-    const dismember = killing || corpseHit || limbDetached !== null;
+    // wall splatter, and pieces torn off.
+    const dismember = killing || corpseHit || limbsDetached.length > 0;
 
     // 1) Particle spurt. Heavy on headshots / killing / corpse hits.
     bloodParticles.emitter = new Vector3(hitX, hitY, hitZ);
@@ -581,30 +581,32 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
       );
     }
 
-    // 4) Dismemberment — fires on a killing hit AND on every later
-    //    shot into the corpse. The `limbDetached` payload (segment +
-    //    side) is the most authoritative signal: combat.fire only
-    //    sets it when a counter actually crossed the threshold. For
-    //    killing hits and corpse hits without an explicit detach we
-    //    fall back to the precise segment that was struck — this is
-    //    where the per-segment hitbox pays off, since a leg-shot kill
-    //    rips off the specific shin or foot the bullet found rather
-    //    than a generic limb. detachBodyPart silently no-ops if the
-    //    piece is already missing, so a body eventually runs out of
-    //    pieces to lose.
+    // 4) Dismemberment — runs on killing hits, corpse hits, and any
+    //    severance the simulation reports. The `limbsDetached` array
+    //    is the authoritative signal from the simulation; for killing
+    //    or corpse hits where nothing was explicitly severed we fall
+    //    back to detaching the precise segment the bullet found.
+    //    detachBodyPart silently no-ops if the piece is already
+    //    missing, so a body eventually runs out of pieces to lose.
     if (dismember && partsForId) {
       const parts = partsForId(victimId);
       if (parts) {
-        const detachKind = limbDetached?.segment ?? segment;
-        const detachSide = limbDetached?.side ?? side ?? undefined;
-        const detached = detachBodyPart(parts, detachKind, detachSide);
-        if (detached) {
-          // Initial velocity in the bullet's direction, with random
-          // splay. Anatomical mass drives the launch impulse: the head
-          // kicks hardest (skull weight + helmet), thigh/upper-arm
-          // are heavy chunks, hand/foot are light flicks. Cascaded
-          // distal pieces ride along at slightly reduced velocity.
-          const launchProfile = LAUNCH_PROFILE[detachKind];
+        type DetachReq = { kind: DetachKind; side?: 'left' | 'right' };
+        const requests: DetachReq[] = [];
+        if (limbsDetached.length > 0) {
+          for (const ld of limbsDetached) {
+            requests.push({ kind: ld.segment, side: ld.side });
+          }
+        } else {
+          // Killing or corpse hit with no explicit severance: detach
+          // the segment the bullet hit (head on a head kill, thigh
+          // on a leg kill, etc.). Side is null for centre-line hits.
+          requests.push({ kind: segment, side: side ?? undefined });
+        }
+        for (const req of requests) {
+          const detached = detachBodyPart(parts, req.kind, req.side);
+          if (!detached) continue;
+          const launchProfile = LAUNCH_PROFILE[req.kind];
           const splay = 1.5;
           const launch = (m: Mesh, scale: number, spinScale: number): void => {
             pushGib(

@@ -58,20 +58,19 @@ export interface EventMap {
      *  applied is 0, no kill credit, but visuals still fire the
      *  full gore stack (gibs + blood) so corpses can be mutilated. */
     corpseHit: boolean;
-    /** When set, this hit pushed the cumulative per-segment damage
-     *  past the detach threshold — the segment tears off mid-fight
-     *  even on a non-killing shot, and any distal segments cascade
-     *  off with it (lose the thigh → shin and foot follow). The
-     *  payload names the proximal break point; the visuals layer
-     *  asks the humanoid to detach that segment which handles the
-     *  cascade internally. The victim keeps fighting (slower / less
-     *  accurate). */
-    limbDetached: {
+    /** Segments severed by this hit — empty for ordinary hits, one
+     *  entry for a hitscan severance, multiple for an explosion that
+     *  blew off several limbs at once. Each entry names the proximal
+     *  break point; the visuals layer asks the humanoid to detach
+     *  that segment which handles distal cascade internally (e.g.
+     *  detaching the thigh also takes shin and foot). The victim
+     *  keeps fighting if alive (slower / less accurate). */
+    limbsDetached: Array<{
       segment:
         | 'upperArm' | 'forearm' | 'hand'
         | 'thigh' | 'shin' | 'foot';
       side: 'left' | 'right';
-    } | null;
+    }>;
     hitX: number; hitY: number; hitZ: number;
     /** Victim's foot Y at the time of impact — used by blood-decal
      *  visuals to drop a pool on the surface they're standing on. */

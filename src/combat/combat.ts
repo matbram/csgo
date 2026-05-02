@@ -10,7 +10,7 @@ import type { WeaponDef } from '../weapons/definitions';
 import { computeDamage, type HitboxKind } from './damage';
 import { raycastHitbox, type HitboxSegment } from './hitbox';
 import {
-  hitboxPose, limbKey, distalSegments, SEGMENT_DETACH_HP,
+  hitboxPose, limbKey, distalSegments, evaluateBulletSeverance,
 } from '../entities/character';
 import { events } from '../engine/events';
 import { computeInaccuracy } from './inaccuracy';
@@ -197,7 +197,7 @@ export class CombatSystem {
       const corpseHit = !bestVictimWasAlive;
       let hpDelta = 0;
       let killing = false;
-      let limbDetached: { segment: LimbSegmentKind; side: LimbSide } | null = null;
+      const limbsDetached: { segment: LimbSegmentKind; side: LimbSide }[] = [];
       if (!corpseHit) {
         const damageMul = opts.damageMul ?? 1;
         const dmg = computeDamage({
@@ -213,26 +213,25 @@ export class CombatSystem {
         if (dmg.helmetDestroyed) bestVictim.helmet = false;
         killing = bestVictim.hp <= 0;
 
-        // Per-segment damage. Each anatomical piece has its own counter,
-        // so two shots to the same shin detach the lower leg without
-        // affecting the thigh or the other side. Only ACTUAL hp damage
-        // counts (hpDelta) so armour absorption applies to limbs too.
-        // When a segment crosses its threshold we cascade the detached
-        // flag to all distal segments on the same side — a thigh that
-        // tears off takes the shin and foot with it.
+        // Single-shot severance physics. A high-energy hit (large
+        // calibre, point-blank slug) severs the segment outright;
+        // smaller hits accumulate trauma until the segment is
+        // structurally compromised, at which point the next hit of
+        // any size finishes it. Knife-class weapons can only sever
+        // distal extremities (hand/foot) — see evaluateBulletSeverance.
         if (isLimbSegment(bestSegment) && bestSide !== null) {
           const seg = bestSegment;
           const side = bestSide;
           const state = bestVictim.limbs[limbKey(seg, side)];
-          if (!state.detached) {
-            state.damage += hpDelta;
-            if (state.damage >= SEGMENT_DETACH_HP[seg]) {
-              state.detached = true;
-              for (const distal of distalSegments(seg)) {
-                bestVictim.limbs[limbKey(distal, side)].detached = true;
-              }
-              limbDetached = { segment: seg, side };
+          const severed = evaluateBulletSeverance(
+            state, seg, hpDelta, weapon.fireMode === 'melee',
+          );
+          if (severed) {
+            state.detached = true;
+            for (const distal of distalSegments(seg)) {
+              bestVictim.limbs[limbKey(distal, side)].detached = true;
             }
+            limbsDetached.push({ segment: seg, side });
           }
         }
 
@@ -250,7 +249,7 @@ export class CombatSystem {
         headshot: bestKind === 'head',
         killing,
         corpseHit,
-        limbDetached,
+        limbsDetached,
         hitX: bestPoint.x, hitY: bestPoint.y, hitZ: bestPoint.z,
         victimFootY: bestVictim.pos.y,
         dirX: finalDir.x, dirY: finalDir.y, dirZ: finalDir.z,

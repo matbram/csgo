@@ -21,8 +21,15 @@ export type LimbSide = 'left' | 'right';
  *  the segment's detach threshold the piece tears off and all distal
  *  segments cascade off with it (e.g. losing the thigh tears the shin
  *  and foot off too). */
+/** Per-segment severance state. A bullet that fails to sever still
+ *  contributes `trauma`; once trauma exceeds the segment's traumaHP
+ *  cap the segment is `compromised` — the next hit of any size will
+ *  finish it. Single-shot severance (a single hit delivering enough
+ *  HP damage past `severeHP`) bypasses trauma and detaches outright,
+ *  matching how real-world traumatic amputation actually works. */
 export interface SegmentState {
-  damage: number;
+  trauma: number;
+  compromised: boolean;
   detached: boolean;
 }
 
@@ -92,10 +99,10 @@ export function hitboxPose(c: Character): HitboxPose {
   };
 }
 
-/** Build a fresh limb state record — all segments at zero damage,
- *  none detached. Used by character constructors and round reset. */
+/** Build a fresh limb state record — all segments healthy. Used by
+ *  character constructors and round reset. */
 export function makeFreshLimbs(): CharacterLimbs {
-  const fresh = (): SegmentState => ({ damage: 0, detached: false });
+  const fresh = (): SegmentState => ({ trauma: 0, compromised: false, detached: false });
   return {
     leftUpperArm: fresh(), leftForearm: fresh(), leftHand: fresh(),
     rightUpperArm: fresh(), rightForearm: fresh(), rightHand: fresh(),
@@ -104,12 +111,13 @@ export function makeFreshLimbs(): CharacterLimbs {
   };
 }
 
-/** Reset all segment counters and detached flags in place. Called from
- *  resetCharacterForRound so we don't reallocate the limbs object. */
+/** Reset all segment state in place. Called from resetCharacterForRound
+ *  so we don't reallocate the limbs object. */
 export function resetLimbs(l: CharacterLimbs): void {
   for (const key of Object.keys(l) as LimbStorageKey[]) {
     const seg = l[key];
-    seg.damage = 0;
+    seg.trauma = 0;
+    seg.compromised = false;
     seg.detached = false;
   }
 }
@@ -135,20 +143,135 @@ export function distalSegments(segment: LimbSegmentKind): LimbSegmentKind[] {
   }
 }
 
-/** Per-segment cumulative HP damage threshold for the segment to tear
- *  off the body. Tuned by anatomical mass: a thigh shrugs off pistol
- *  spam, a hand pops off after a couple of shots. Calibrated so an
- *  AWP body shot (~86 hp pre-armour to a leg) one-shots any leg
- *  segment, an AK takes 2-4 shots depending on segment, and a pistol
- *  needs sustained fire. */
-export const SEGMENT_DETACH_HP: Record<LimbSegmentKind, number> = {
-  thigh: 70,
-  shin: 45,
-  foot: 25,
-  upperArm: 60,
-  forearm: 40,
-  hand: 20,
+/** Severance physics per segment.
+ *
+ *  - `severeHP` — hpDelta in a single hit needed to amputate immediately.
+ *    Mirrors real-world traumatic amputation: a single high-energy event
+ *    severs (large caliber, point-blank shotgun, explosive proximity);
+ *    small-arms hits do not on their own.
+ *  - `traumaHP` — cumulative non-severing damage cap. Once exceeded the
+ *    segment is "structurally compromised" — the next hit of any size
+ *    finishes it. Models a limb so mangled it's hanging by a thread.
+ *  - `explosiveSever` — denominator for explosive severance probability:
+ *    p = min(0.95, blastDamage / explosiveSever). Distal pieces have
+ *    smaller bones and pop off more readily near a blast.
+ *
+ *  Calibrated against the post-multiplier, post-armor `hpDelta` that
+ *  combat.ts actually emits (see plan file). Examples:
+ *    AWP point-blank thigh (115 × 0.75 = 86) ≥ 80 → one-shot
+ *    AK thigh (27)         → trauma (8 hits to compromise; victim dead first)
+ *    Knife slash hand (65) → severs in one slash
+ *    Knife slash thigh(49) → trauma only (matches real-world plausibility) */
+export interface SeveranceProfile {
+  severeHP: number;
+  traumaHP: number;
+  explosiveSever: number;
+}
+
+/** Severance profiles by segment. Head is included so non-killing
+ *  headshots (rare — long-range AWP through helmet) don't pop heads
+ *  off; killing headshots still detach the head via the existing
+ *  kill-detach path in visuals. */
+export const SEVERANCE_PROFILE: Record<LimbSegmentKind | 'head', SeveranceProfile> = {
+  head:     { severeHP: 110, traumaHP: 200, explosiveSever: 150 },
+  thigh:    { severeHP:  80, traumaHP: 200, explosiveSever: 130 },
+  shin:     { severeHP:  65, traumaHP: 150, explosiveSever: 100 },
+  foot:     { severeHP:  40, traumaHP:  80, explosiveSever:  60 },
+  upperArm: { severeHP:  75, traumaHP: 180, explosiveSever: 120 },
+  forearm:  { severeHP:  55, traumaHP: 120, explosiveSever:  90 },
+  hand:     { severeHP:  45, traumaHP:  70, explosiveSever:  55 },
 };
+
+/** Bullet severance evaluation — single-shot trauma physics. Mutates
+ *  the segment state: increments trauma when the hit doesn't sever,
+ *  and flips `compromised` when the trauma cap is crossed. Returns
+ *  true iff the segment should detach right now (caller cascades
+ *  distal pieces).
+ *
+ *  Melee weapons are restricted to severing distal extremities only:
+ *  a knife can take fingers, a hand, or a foot off, but it doesn't
+ *  realistically sever a thigh or shin even on a stab. Blocked melee
+ *  hits still feed the trauma counter. */
+export function evaluateBulletSeverance(
+  state: SegmentState,
+  segment: LimbSegmentKind,
+  hpDelta: number,
+  isMelee: boolean,
+): boolean {
+  if (state.detached) return false;
+  const profile = SEVERANCE_PROFILE[segment];
+  const meleeAllowed = !isMelee || segment === 'hand' || segment === 'foot';
+  // Compromised segment: any further hit (within melee scope rules)
+  // finishes the job.
+  if (state.compromised && meleeAllowed) return true;
+  // Single-shot severance from a high-energy hit.
+  if (meleeAllowed && hpDelta >= profile.severeHP) return true;
+  // Trauma accumulation — one day this hit's contribution will tip
+  // the segment past its cap and the next bullet will sever it.
+  state.trauma += hpDelta;
+  if (state.trauma >= profile.traumaHP) state.compromised = true;
+  return false;
+}
+
+/** Explosive severance roll for one segment. Probability scales with
+ *  the blast's effective damage on the victim, capped at 0.95 so even
+ *  a point-blank grenade leaves *some* limbs attached for variety.
+ *  Failed rolls still feed the trauma counter at a reduced rate so a
+ *  near-miss can leave a limb compromised for a follow-up shot. */
+export function rollExplosiveSeverance(
+  state: SegmentState,
+  segment: LimbSegmentKind,
+  blastDamage: number,
+): boolean {
+  if (state.detached) return false;
+  const profile = SEVERANCE_PROFILE[segment];
+  const p = Math.min(0.95, blastDamage / profile.explosiveSever);
+  if (Math.random() < p) return true;
+  state.trauma += blastDamage * 0.4;
+  if (state.trauma >= profile.traumaHP) state.compromised = true;
+  return false;
+}
+
+/** Helper for callers that need to enumerate limb segments by side. */
+export const LIMB_SEGMENT_KINDS: readonly LimbSegmentKind[] = [
+  'upperArm', 'forearm', 'hand',
+  'thigh', 'shin', 'foot',
+];
+
+/** Apply explosive severance to every limb segment of a victim and
+ *  return the deduplicated list of proximal break points to feed into
+ *  the visuals layer. Distal cascade is handled here: if a thigh
+ *  severs we mark its shin and foot detached and skip rolling for
+ *  them (and we omit them from the returned list because
+ *  detachBodyPart cascades when given the proximal segment). The
+ *  iteration order is proximal-first so a thigh sever short-circuits
+ *  the shin/foot rolls on the same side. */
+export function rollSegmentSeverance(
+  victim: Character,
+  blastDamage: number,
+): Array<{ segment: LimbSegmentKind; side: LimbSide }> {
+  const out: Array<{ segment: LimbSegmentKind; side: LimbSide }> = [];
+  const sides: LimbSide[] = ['left', 'right'];
+  const proximalToDistal: LimbSegmentKind[] = [
+    'thigh', 'shin', 'foot',
+    'upperArm', 'forearm', 'hand',
+  ];
+  for (const side of sides) {
+    for (const seg of proximalToDistal) {
+      const state = victim.limbs[limbKey(seg, side)];
+      if (state.detached) continue;
+      const severed = rollExplosiveSeverance(state, seg, blastDamage);
+      if (severed) {
+        state.detached = true;
+        for (const distal of distalSegments(seg)) {
+          victim.limbs[limbKey(distal, side)].detached = true;
+        }
+        out.push({ segment: seg, side });
+      }
+    }
+  }
+  return out;
+}
 
 /** Movement speed scale from leg damage. Each side contributes its own
  *  factor; we multiply the two so losing one foot is mild and losing
