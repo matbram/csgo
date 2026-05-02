@@ -7,6 +7,7 @@
  *  has variance even at the bottom of the spray pattern. */
 
 import type { WeaponDef } from '../weapons/definitions';
+import { debugLog } from '../engine/debugLog';
 
 export interface ShooterMotion {
   /** Horizontal speed in m/s. */
@@ -26,7 +27,15 @@ export interface ShooterMotion {
  *  removed is the gun's random base-cone wiggle while perfectly still. */
 export function computeInaccuracy(def: WeaponDef, motion: ShooterMotion): number {
   const stationary = motion.speed < 1.0 && !motion.inAir;
-  if (stationary) return 0;
+  if (stationary) {
+    if (debugLog.isEnabled('shooting')) {
+      debugLog.shooting('inaccuracy.stationary', {
+        weapon: def.id, speed: motion.speed, inAir: motion.inAir,
+        crouching: motion.crouching, returned: 0,
+      });
+    }
+    return 0;
+  }
 
   // Base inaccuracy (also affected by crouch). Only contributes when
   // moving or airborne — see the early return above.
@@ -45,5 +54,11 @@ export function computeInaccuracy(def: WeaponDef, motion: ShooterMotion): number
     acc += def.jumpingInaccuracyMul * 0.05;
   }
 
+  if (debugLog.isEnabled('shooting')) {
+    debugLog.shooting('inaccuracy.moving', {
+      weapon: def.id, speed: motion.speed, inAir: motion.inAir,
+      crouching: motion.crouching, returned: acc,
+    });
+  }
   return acc;
 }

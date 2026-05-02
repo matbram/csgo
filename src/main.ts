@@ -22,6 +22,7 @@ import { input } from './engine/input';
 import { loop } from './engine/loop';
 import { time } from './engine/time';
 import { events } from './engine/events';
+import { debugLog } from './engine/debugLog';
 import { buildMap } from './map/builder';
 import { dust2 } from './map/dust2';
 import { CharacterController, DEFAULT_TUNABLES } from './player/controller';
@@ -321,6 +322,24 @@ function bootstrap(): void {
     planRoundStart(ctBoard, ctBots, match.players, world, navGrid, round, time.simMs);
     applyBlackboardObjectives(tBoard, tBots);
     applyBlackboardObjectives(ctBoard, ctBots);
+    debugLog.round('refreshBots', {
+      round,
+      simMs: time.simMs,
+      tStrategy: tBoard.strategy,
+      ctStrategy: ctBoard.strategy,
+      tBots: tBots.map(b => ({
+        id: b.id, alive: b.character.alive,
+        team: b.character.team, aiDisabled: b.aiDisabled,
+        objective: b.objective,
+        pos: { x: b.character.pos.x, z: b.character.pos.z },
+      })),
+      ctBots: ctBots.map(b => ({
+        id: b.id, alive: b.character.alive,
+        team: b.character.team, aiDisabled: b.aiDisabled,
+        objective: b.objective,
+        pos: { x: b.character.pos.x, z: b.character.pos.z },
+      })),
+    });
   };
 
   const applyBlackboardObjectives = (
@@ -423,6 +442,7 @@ function bootstrap(): void {
   const startFirstRound = (): void => {
     if (firstRoundStarted) return;
     firstRoundStarted = true;
+    debugLog.round('startFirstRound', { simMs: time.simMs });
     // Reset everyone first so beginRound's carrier pick sees alive
     // characters; then begin the round; then assign the C4 to the
     // carrier. We use the current simMs so the freeze window starts
@@ -629,6 +649,29 @@ function bootstrap(): void {
       const fwdX = fwdRef.x;
       const fwdY = fwdRef.y;
       const fwdZ = fwdRef.z;
+      if (debugLog.isEnabled('shooting') && input.wasMousePressed(0)) {
+        // Log only on the trigger edge so we don't spam every tick of a
+        // held auto burst — that would drown out the per-shot detail in
+        // combat.fire below. The full trace per shot still goes via
+        // combat.fire / inaccuracy logs.
+        debugLog.shooting('main.firePressed', {
+          weapon: activeInst.def.id,
+          scopeLevel: activeInst.scopeLevel,
+          camPos: { x: eyeX, y: eyeY, z: eyeZ },
+          camFwd: { x: fwdX, y: fwdY, z: fwdZ },
+          ctrlPos: {
+            x: ctrl.state.pos.x,
+            y: ctrl.state.pos.y + ctrl.state.currentEye,
+            z: ctrl.state.pos.z,
+          },
+          ctrlYawPitch: { yaw: ctrl.state.yaw, pitch: ctrl.state.pitch },
+          shooterSpeed: localPlayer.character.speed,
+          inAir: localPlayer.character.inAir,
+          crouching: localPlayer.character.crouching,
+          sprayIndex: activeInst.sprayIndex,
+          ammoMag: activeInst.ammoMag,
+        });
+      }
 
       // Grenades are thrown, not hitscan-fired. LMB = full throw, RMB =
       // underhand. After a successful throw the consumed instance is
@@ -691,6 +734,18 @@ function bootstrap(): void {
     const curPhase = match.round?.phase ?? null;
     if (curPhase === 'live' && lastSeenPhase !== 'live') {
       liveStartedAtMs = time.simMs;
+      debugLog.round('phase.freeze→live', {
+        round: match.round?.number,
+        simMs: time.simMs,
+        botsAlive: bots.filter(b => b.character.alive).length,
+        botsWithObjective: bots.filter(b => b.objective !== null).length,
+      });
+    }
+    if (curPhase !== lastSeenPhase) {
+      debugLog.round('phase.transition', {
+        from: lastSeenPhase, to: curPhase,
+        round: match.round?.number, simMs: time.simMs,
+      });
     }
     lastSeenPhase = curPhase;
 
@@ -718,6 +773,8 @@ function bootstrap(): void {
         // (via localPlayer.controller) and the brain would otherwise
         // overwrite yaw/pitch and try to drive movement.
         if (bot.aiDisabled) continue;
+        const prevState = bot.brain.state;
+        const prevSpeed = bot.character.speed;
         bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
         const isT = bot.character.team === 'T';
         const board = isT ? tBoard : ctBoard;
@@ -746,6 +803,33 @@ function bootstrap(): void {
           // While engaging the brain owns yaw; let it through unmodified.
           faceMovement: decision.followPath,
         });
+        // Per-bot trace, gated by channel so it's silent in normal play.
+        // We log only on a state change OR when the bot is supposed to
+        // be moving but isn't — the second one is the smoking gun for
+        // "everyone stands at spawn" complaints.
+        if (debugLog.isEnabled('bots')) {
+          const stateChanged = prevState !== bot.brain.state;
+          const stuck = decision.followPath
+            && bot.character.speed < 0.1
+            && prevSpeed < 0.1
+            && bot.objective !== null;
+          if (stateChanged || stuck) {
+            debugLog.bots(stuck ? 'bot.stuck' : 'bot.stateChange', {
+              id: bot.id, team: bot.character.team,
+              prevState, newState: bot.brain.state,
+              followPath: decision.followPath,
+              hasObjective: bot.objective !== null,
+              objective: bot.objective,
+              hasPath: bot.path !== null,
+              pathLen: bot.path?.length ?? 0,
+              pathIdx: bot.pathIdx,
+              pos: { x: bot.character.pos.x, y: bot.character.pos.y, z: bot.character.pos.z },
+              speed: bot.character.speed,
+              nextPlanAfterMs: bot.nextPlanAfterMs,
+              simMs: time.simMs,
+            });
+          }
+        }
       }
     } else {
       // Freeze / round-end: still tick perception so KnownEnemies decay
@@ -988,7 +1072,7 @@ function bootstrap(): void {
   // Quiet a couple of unused-ish references for the linter.
   void engine; void scene; void makeInstance; void playSound;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, bots, navGrid, pathService, characters, get match() { return match; } };
+  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, bots, navGrid, pathService, characters, debugLog, get match() { return match; } };
 }
 
 function currentInstance(p: LocalPlayer): WeaponInstance | null {

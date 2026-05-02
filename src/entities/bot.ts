@@ -22,6 +22,7 @@ import type { PathService } from '../nav/pathService';
 import { Perception } from '../ai/perception';
 import { Brain } from '../ai/brain';
 import { getDifficulty, withVariance, type DifficultyId } from '../ai/difficulty';
+import { debugLog } from '../engine/debugLog';
 
 /** Distance to a waypoint at which we consider it reached and advance to
  *  the next one. A bit larger than a cell so bots don't hover on each
@@ -181,8 +182,25 @@ export function stepBot(
     if (result && result.length > 0) {
       bot.path = result;
       bot.pathIdx = 0;
+      if (debugLog.isEnabled('bots')) {
+        debugLog.bots('path.computed', {
+          id: bot.id, start, goal: bot.objective,
+          pathLen: result.length, simMs: nowMs,
+        });
+      }
     } else if (hadBudget) {
       bot.nextPlanAfterMs = nowMs + PATH_RETRY_MS;
+      if (debugLog.isEnabled('bots')) {
+        debugLog.bots('path.failed', {
+          id: bot.id, start, goal: bot.objective,
+          backoffUntilMs: bot.nextPlanAfterMs, simMs: nowMs,
+          reason: 'request returned null after burning budget (unreachable or no snap)',
+        });
+      }
+    } else if (debugLog.isEnabled('bots')) {
+      debugLog.bots('path.deferred', {
+        id: bot.id, reason: 'path-service budget exhausted', simMs: nowMs,
+      });
     }
   }
 

@@ -14,6 +14,7 @@ import { events } from '../engine/events';
 import { computeInaccuracy } from './inaccuracy';
 import { time } from '../engine/time';
 import type { SmokeField } from '../grenades/smokeField';
+import { debugLog } from '../engine/debugLog';
 
 const MAX_RANGE_M = 120;
 
@@ -89,6 +90,30 @@ export class CombatSystem {
       sprayX, sprayY,
       scatterDeg,
     );
+
+    // Per-shot trace: aim ray, the spray-pattern entry we picked, the
+    // scatter cone we added, and the resulting direction. Compare aim
+    // vs final to see exactly how far off the bullet is from the
+    // crosshair. Off only by `scatterDeg` of cone when stationary +
+    // first shot (should be 0,0,0 deviation).
+    if (debugLog.isEnabled('shooting')) {
+      const aimToFinalDeg =
+        Math.acos(Math.max(-1, Math.min(1,
+          opts.fwdX * finalDir.x + opts.fwdY * finalDir.y + opts.fwdZ * finalDir.z,
+        ))) * 180 / Math.PI;
+      debugLog.shooting('combat.fire', {
+        shooter: opts.shooter.id,
+        weapon: weapon.id,
+        sprayIndex: opts.sprayIndex,
+        sprayPatternEntry: { sprayX, sprayY },
+        inaccuracyDeg: opts.inaccuracyDeg,
+        scatterDeg,
+        origin: { x: opts.ox, y: opts.oy, z: opts.oz },
+        aim: { x: opts.fwdX, y: opts.fwdY, z: opts.fwdZ },
+        finalDir: { x: finalDir.x, y: finalDir.y, z: finalDir.z },
+        aimToFinalDeg,
+      });
+    }
 
     // Melee weapons are short-range — anything past the falloff envelope
     // is wasted compute and would emit a kill-from-the-void event.
@@ -178,6 +203,13 @@ export class CombatSystem {
           tMs: time.simMs,
         });
       }
+      if (debugLog.isEnabled('shooting')) {
+        debugLog.shooting('combat.hit.character', {
+          shooter: opts.shooter.id, victim: bestVictim.id, hitbox: bestKind,
+          distance: closestT, damage: hpDelta, killing,
+          point: bestPoint,
+        });
+      }
       return {
         endX: bestPoint.x, endY: bestPoint.y, endZ: bestPoint.z,
         kind: 'character',
@@ -200,6 +232,12 @@ export class CombatSystem {
         distance: worldT,
         tMs: time.simMs,
       });
+      if (debugLog.isEnabled('shooting')) {
+        debugLog.shooting('combat.hit.world', {
+          shooter: opts.shooter.id, surface: worldHit.surface,
+          distance: worldT, point: { x: ex, y: ey, z: ez },
+        });
+      }
       return {
         endX: ex, endY: ey, endZ: ez,
         kind: 'world',
@@ -208,6 +246,11 @@ export class CombatSystem {
       };
     }
 
+    if (debugLog.isEnabled('shooting')) {
+      debugLog.shooting('combat.miss', {
+        shooter: opts.shooter.id, distance: maxRange,
+      });
+    }
     // Miss into the void.
     return {
       endX: opts.ox + finalDir.x * maxRange,
