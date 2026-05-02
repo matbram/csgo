@@ -19,6 +19,9 @@
 
 import type { World } from '../map/world';
 import type { Character } from '../entities/character';
+import { rollSegmentSeverance } from '../entities/character';
+import { events } from '../engine/events';
+import { time } from '../engine/time';
 import type { Side, RoundReason, RoundOutcome } from './economy';
 import {
   type BombState, makeBombState, stepBomb,
@@ -163,7 +166,11 @@ function countAlive(chars: Character[], side: Side): number {
 }
 
 /** Apply bomb-explosion damage to nearby characters. Should be called
- *  exactly once when the bomb transitions to 'finished:exploded'. */
+ *  exactly once when the bomb transitions to 'finished:exploded'.
+ *  Beyond raw HP damage we run per-segment explosive severance — at
+ *  the bomb's max damage (500 hp at centre) every limb on a victim
+ *  near the blast pops off, reading as a body torn apart by the
+ *  explosion. Visuals subscribe to combat:hit and handle the gibs. */
 export function applyBombExplosionDamage(
   bombPos: { x: number; y: number; z: number },
   chars: Character[],
@@ -181,6 +188,32 @@ export function applyBombExplosionDamage(
     const hpDamage = Math.max(0, Math.floor(damage * (c.armor > 0 ? 0.5 : 1)));
     c.armor = Math.max(0, c.armor - takeFromArmor);
     c.hp = Math.max(0, c.hp - hpDamage);
-    if (c.hp <= 0) c.alive = false;
+    const killing = c.hp <= 0;
+    if (killing) c.alive = false;
+
+    // Per-segment severance from the blast. Use raw blast damage (not
+    // hpDamage) — armour doesn't really protect a limb from a bomb
+    // going off next to it, and the explosive thresholds are tuned
+    // against pre-armour intensity.
+    const limbsDetached = rollSegmentSeverance(c, damage);
+
+    const inv = dist > 1e-3 ? 1 / dist : 0;
+    events.emit('combat:hit', {
+      attackerId: 'bomb', victimId: c.id, weapon: 'c4',
+      hitbox: 'chest', segment: 'chest', side: null,
+      damage: hpDamage, headshot: false, killing,
+      corpseHit: false,
+      limbsDetached,
+      hitX: bombPos.x, hitY: bombPos.y, hitZ: bombPos.z,
+      victimFootY: c.pos.y,
+      dirX: dx * inv, dirY: dy * inv, dirZ: dz * inv,
+      distance: dist, tMs: time.simMs,
+    });
+    if (killing) {
+      events.emit('combat:kill', {
+        attackerId: 'bomb', victimId: c.id, weapon: 'c4',
+        headshot: false, tMs: time.simMs,
+      });
+    }
   }
 }

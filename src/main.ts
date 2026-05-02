@@ -33,6 +33,7 @@ import { SettingsHud } from './hud/settingsHud';
 import { settings } from './engine/settings';
 import { DebugHud } from './hud/debugHud';
 import { LocalPlayer } from './player/localPlayer';
+import { legSpeedScale } from './entities/character';
 import { ViewModel } from './player/viewModel';
 import { CombatSystem } from './combat/combat';
 import { FiringController } from './combat/firing';
@@ -563,15 +564,12 @@ function bootstrap(): void {
     let speedScale = (inst && inst.scopeLevel > 0 && inst.def.scopedMoveSpeedScale !== undefined)
       ? inst.def.scopedMoveSpeedScale
       : (inst?.def.moveSpeedScale ?? 1.0);
-    // Lost-leg impairment. One leg gone → half-speed limp; both
-    // legs gone → ~crawling, fast enough to crab-shuffle out of an
-    // exposed angle but you're not winning a foot race. Stacks
-    // multiplicatively with the weapon-driven scale.
-    const legsGone =
-      (localPlayer.character.leftLegDetached ? 1 : 0)
-      + (localPlayer.character.rightLegDetached ? 1 : 0);
-    if (legsGone === 1) speedScale *= 0.50;
-    else if (legsGone >= 2) speedScale *= 0.18;
+    // Lost-segment impairment. Speed scales by anatomical loss: a
+    // missing foot is a noticeable limp, a missing shin is much
+    // worse, a missing whole leg drags. Both legs gone bottoms out
+    // near a crab-shuffle. Stacks multiplicatively with the weapon-
+    // driven scale.
+    speedScale *= legSpeedScale(localPlayer.character);
     const wishX = fX * forward + rX * strafe;
     const wishZ = fZ * forward + rZ * strafe;
 

@@ -1,8 +1,10 @@
-/** Procedural humanoid mesh — head, torso, pelvis, two arm groups,
- *  two leg groups, plus gear (helmet, vest, boots). Each limb is its
- *  own mesh so the gore visuals can detach a specific part on a
- *  killing hit. The combat layer asks for a clone of the matching
- *  part, hides the original on the corpse, and lets the clone fly
+/** Procedural humanoid mesh — head, torso, pelvis, two arm groups
+ *  (upper arm + forearm + hand), two leg groups (thigh + shin + foot),
+ *  plus gear (helmet, vest, boots). Each limb segment is its own mesh
+ *  so the gore visuals can detach a specific anatomical piece on a hit
+ *  and cascade distal pieces with it (lose the thigh → shin and foot
+ *  fly off too). The combat layer asks for a clone of the matching
+ *  segment, hides the original on the corpse, and lets the clone fly
  *  off as a gib. */
 
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
@@ -13,6 +15,8 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { getScene } from '../engine/scene';
 import { addShadowCaster } from '../engine/lighting';
+import type { LimbSegmentKind, LimbSide } from './character';
+import { distalSegments } from './character';
 
 const teamMaterials = new Map<string, StandardMaterial>();
 
@@ -90,8 +94,10 @@ export interface HumanoidParts {
   pelvis: Mesh;
   leftUpperArm: Mesh;
   leftForearm: Mesh;
+  leftHand: Mesh;
   rightUpperArm: Mesh;
   rightForearm: Mesh;
+  rightHand: Mesh;
   leftThigh: Mesh;
   leftShin: Mesh;
   leftFoot: Mesh;
@@ -160,11 +166,12 @@ export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
   //   Head sphere     — center y = 1.71  (top ~1.82)
   //   Torso box       — center y = 1.32  height 0.50
   //   Pelvis box      — center y = 0.99  height 0.18
-  //   Thigh box       — center y = 0.69  height 0.40
-  //   Shin box        — center y = 0.27  height 0.42
-  //   Foot box        — center y = 0.04  height 0.08
-  //   Upper arm box   — center y = 1.27  height 0.36, x=±0.31
-  //   Forearm box     — center y = 0.85  height 0.42, x=±0.31
+  //   Thigh box       — center y = 0.69  height 0.40   (top 0.89, bot 0.49)
+  //   Shin box        — center y = 0.27  height 0.42   (top 0.48, bot 0.06)
+  //   Foot box        — center y = 0.04  height 0.08   (top 0.08, bot 0.00)
+  //   Upper arm box   — center y = 1.27  height 0.36, x=±0.31  (top 1.45, bot 1.09)
+  //   Forearm box     — center y = 0.94  height 0.24, x=±0.31  (top 1.06, bot 0.82)
+  //   Hand box        — center y = 0.73  height 0.18, x=±0.31  (top 0.82, bot 0.64)
   // ------------------------------------------------------------------
 
   const part = (
@@ -194,19 +201,21 @@ export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
   const torso = part('torso',  0.46, 0.50, 0.28,  0,    1.32, 0, teamMat, root);
   const pelvis = part('pelvis', 0.42, 0.18, 0.28,  0,    0.99, 0, teamMat, root);
 
-  // Arms
-  const luArm = part('larm-up',  0.12, 0.36, 0.12, -0.31, 1.27, 0, teamMat, root);
-  const lfArm = part('larm-fwd', 0.11, 0.42, 0.11, -0.31, 0.85, 0, skin,    root);
-  const ruArm = part('rarm-up',  0.12, 0.36, 0.12,  0.31, 1.27, 0, teamMat, root);
-  const rfArm = part('rarm-fwd', 0.11, 0.42, 0.11,  0.31, 0.85, 0, skin,    root);
+  // Arms — upper arm (sleeved) → forearm (skin) → hand (skin).
+  const luArm = part('larm-up',   0.12, 0.36, 0.12, -0.31, 1.27, 0, teamMat, root);
+  const lfArm = part('larm-fwd',  0.11, 0.24, 0.11, -0.31, 0.94, 0, skin,    root);
+  const lHand = part('larm-hand', 0.10, 0.18, 0.08, -0.31, 0.73, 0, skin,    root);
+  const ruArm = part('rarm-up',   0.12, 0.36, 0.12,  0.31, 1.27, 0, teamMat, root);
+  const rfArm = part('rarm-fwd',  0.11, 0.24, 0.11,  0.31, 0.94, 0, skin,    root);
+  const rHand = part('rarm-hand', 0.10, 0.18, 0.08,  0.31, 0.73, 0, skin,    root);
 
-  // Legs
-  const lThigh = part('lleg-thigh', 0.18, 0.40, 0.22, -0.11, 0.69, 0, pants, root);
-  const lShin  = part('lleg-shin',  0.16, 0.42, 0.20, -0.11, 0.27, 0, pants, root);
-  const lFoot  = part('lleg-foot',  0.20, 0.08, 0.30, -0.11, 0.04, 0.04, boot, root);
-  const rThigh = part('rleg-thigh', 0.18, 0.40, 0.22,  0.11, 0.69, 0, pants, root);
-  const rShin  = part('rleg-shin',  0.16, 0.42, 0.20,  0.11, 0.27, 0, pants, root);
-  const rFoot  = part('rleg-foot',  0.20, 0.08, 0.30,  0.11, 0.04, 0.04, boot, root);
+  // Legs — thigh → shin → foot. Foot box is wider in Z (toe forward).
+  const lThigh = part('lleg-thigh', 0.18, 0.40, 0.22, -0.11, 0.69, 0,    pants, root);
+  const lShin  = part('lleg-shin',  0.16, 0.42, 0.20, -0.11, 0.27, 0,    pants, root);
+  const lFoot  = part('lleg-foot',  0.20, 0.08, 0.30, -0.11, 0.04, 0.04, boot,  root);
+  const rThigh = part('rleg-thigh', 0.18, 0.40, 0.22,  0.11, 0.69, 0,    pants, root);
+  const rShin  = part('rleg-shin',  0.16, 0.42, 0.20,  0.11, 0.27, 0,    pants, root);
+  const rFoot  = part('rleg-foot',  0.20, 0.08, 0.30,  0.11, 0.04, 0.04, boot,  root);
 
   // ----- Gear: helmet, vest, pouches, plate -----
   // Helmet shell sits on the head; cloning the head clones these too
@@ -243,8 +252,8 @@ export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
 
   return {
     root, head, torso, pelvis,
-    leftUpperArm: luArm, leftForearm: lfArm,
-    rightUpperArm: ruArm, rightForearm: rfArm,
+    leftUpperArm: luArm, leftForearm: lfArm, leftHand: lHand,
+    rightUpperArm: ruArm, rightForearm: rfArm, rightHand: rHand,
     leftThigh: lThigh, leftShin: lShin, leftFoot: lFoot,
     rightThigh: rThigh, rightShin: rShin, rightFoot: rFoot,
     gear,
@@ -366,8 +375,10 @@ export function syncHumanoidPose(
   parts.torso.position.y = torsoY;
   parts.leftUpperArm.position.y = 1.27 * crouchRatio;
   parts.rightUpperArm.position.y = 1.27 * crouchRatio;
-  parts.leftForearm.position.y = 0.85 * crouchRatio;
-  parts.rightForearm.position.y = 0.85 * crouchRatio;
+  parts.leftForearm.position.y = 0.94 * crouchRatio;
+  parts.rightForearm.position.y = 0.94 * crouchRatio;
+  parts.leftHand.position.y = 0.73 * crouchRatio;
+  parts.rightHand.position.y = 0.73 * crouchRatio;
 
   // Head sits at eye + small offset so it stays consistent with the
   // hitbox model regardless of crouch.
@@ -380,8 +391,10 @@ export function disposeHumanoid(parts: HumanoidParts): void {
   parts.pelvis.dispose();
   parts.leftUpperArm.dispose();
   parts.leftForearm.dispose();
+  parts.leftHand.dispose();
   parts.rightUpperArm.dispose();
   parts.rightForearm.dispose();
+  parts.rightHand.dispose();
   parts.leftThigh.dispose();
   parts.leftShin.dispose();
   parts.leftFoot.dispose();
@@ -395,84 +408,95 @@ export function disposeHumanoid(parts: HumanoidParts): void {
   parts.root.dispose();
 }
 
+/** What the visuals layer asks for when something needs to come off
+ *  the body. 'head', 'chest', and 'stomach' are atomic — they just
+ *  peel off a token piece (helmet / vest plate / belt pouch) so a
+ *  centre-mass kill still produces a visible chunk. The limb segments
+ *  cascade automatically: detaching a proximal segment also detaches
+ *  every still-attached distal segment on the same side (thigh →
+ *  shin + foot). */
+export type DetachKind =
+  | 'head'
+  | 'chest'
+  | 'stomach'
+  | LimbSegmentKind;
+
+type SegmentMeshKey =
+  | 'leftUpperArm' | 'leftForearm' | 'leftHand'
+  | 'rightUpperArm' | 'rightForearm' | 'rightHand'
+  | 'leftThigh' | 'leftShin' | 'leftFoot'
+  | 'rightThigh' | 'rightShin' | 'rightFoot';
+
+function segmentMeshKey(segment: LimbSegmentKind, side: LimbSide): SegmentMeshKey {
+  const cap = segment.charAt(0).toUpperCase() + segment.slice(1);
+  return `${side}${cap}` as SegmentMeshKey;
+}
+
+function segmentMesh(parts: HumanoidParts, segment: LimbSegmentKind, side: LimbSide): Mesh {
+  return parts[segmentMeshKey(segment, side)];
+}
+
 /** Tear a body part off the humanoid. Picks meshes that match the
- *  hitbox kind + side, clones each at its current absolute world
+ *  detach kind + side, clones each at its current absolute world
  *  transform, hides the originals on the corpse, and returns the
  *  detached meshes so the visuals layer can run gib physics on them.
  *  The primary mesh is launched first (it's the "main" chunk), the
  *  extras come along at slightly reduced velocity (limbs trailing
- *  shoulder pads, helmet pieces following the head, etc.). */
+ *  shoulder pads, helmet pieces following the head, distal limb
+ *  segments riding the proximal stump out into the air). */
 export function detachBodyPart(
   parts: HumanoidParts,
-  kind: 'head' | 'arm' | 'leg' | 'chest',
-  side?: 'left' | 'right',
+  kind: DetachKind,
+  side?: LimbSide,
 ): { primary: Mesh; extras: Mesh[] } | null {
-  // Resolve which side to detach for arms and legs. The caller can
-  // pass an explicit side; if not, fall back to whichever side is
-  // still attached (preferring left).
-  const pickArm = (s: 'left' | 'right'): Mesh[] => {
-    if (s === 'left' && parts.leftUpperArm.isEnabled()) {
-      return [parts.leftUpperArm, parts.leftForearm];
-    }
-    if (s === 'right' && parts.rightUpperArm.isEnabled()) {
-      return [parts.rightUpperArm, parts.rightForearm];
-    }
-    return [];
-  };
-  const pickLeg = (s: 'left' | 'right'): Mesh[] => {
-    if (s === 'left' && parts.leftThigh.isEnabled()) {
-      return [parts.leftThigh, parts.leftShin, parts.leftFoot];
-    }
-    if (s === 'right' && parts.rightThigh.isEnabled()) {
-      return [parts.rightThigh, parts.rightShin, parts.rightFoot];
-    }
-    return [];
-  };
-
   let primaryOriginal: Mesh | undefined;
   const extraOriginals: Mesh[] = [];
 
-  switch (kind) {
-    case 'head': {
-      if (!parts.head.isEnabled()) return null;
-      primaryOriginal = parts.head;
-      // Helmet is parented to the head — cloning the head sphere alone
-      // wouldn't take the helmet shell. Treat helmet pieces as extras.
-      for (const g of parts.gear) {
-        if (g.name.includes('helmet') && g.isEnabled()) extraOriginals.push(g);
-      }
-      break;
+  if (kind === 'head') {
+    if (!parts.head.isEnabled()) return null;
+    primaryOriginal = parts.head;
+    // Helmet is parented to the head — cloning the head sphere alone
+    // wouldn't take the helmet shell. Treat helmet pieces as extras.
+    for (const g of parts.gear) {
+      if (g.name.includes('helmet') && g.isEnabled()) extraOriginals.push(g);
     }
-    case 'arm': {
-      const wantSide: 'left' | 'right' = side
-        ?? (parts.leftUpperArm.isEnabled() ? 'left' : 'right');
-      const armPieces = pickArm(wantSide);
-      if (armPieces.length === 0) return null;
-      primaryOriginal = armPieces[0];
-      for (let i = 1; i < armPieces.length; i++) extraOriginals.push(armPieces[i]!);
-      // Drag the matching shoulder pad along.
+  } else if (kind === 'chest') {
+    // Centre-mass kill — peel off the vest plate as a token chunk so
+    // the corpse looks mutilated even when no limb came off. The
+    // torso itself stays so the body is still recognisable.
+    const plate = parts.gear.find(g => g.name.includes('vest-plate') && g.isEnabled());
+    if (!plate) return null;
+    primaryOriginal = plate;
+  } else if (kind === 'stomach') {
+    // Pelvis kill — pull off the belt or one of the pouches as the
+    // token piece. We try the pouches first since each pouch can be
+    // peeled separately (different pouches stay attached when one
+    // gets shot off), with the belt as a final fallback.
+    const target =
+      parts.gear.find(g => g.name.includes('pouch-l') && g.isEnabled())
+      ?? parts.gear.find(g => g.name.includes('pouch-r') && g.isEnabled())
+      ?? parts.gear.find(g => g.name.includes('belt') && g.isEnabled());
+    if (!target) return null;
+    primaryOriginal = target;
+  } else {
+    // Limb segment — pick the matching mesh, then cascade distal
+    // segments on the same side as extras.
+    const wantSide: LimbSide = side
+      ?? (segmentMesh(parts, kind, 'left').isEnabled() ? 'left' : 'right');
+    const primary = segmentMesh(parts, kind, wantSide);
+    if (!primary.isEnabled()) return null;
+    primaryOriginal = primary;
+    for (const seg of distalSegments(kind)) {
+      const m = segmentMesh(parts, seg, wantSide);
+      if (m.isEnabled()) extraOriginals.push(m);
+    }
+    // Drag the matching shoulder pad along when the upper arm goes —
+    // it's parented to the upper-arm mesh so cloning the upper arm
+    // alone wouldn't take it.
+    if (kind === 'upperArm') {
       const tag = wantSide === 'left' ? 'shoulder-l' : 'shoulder-r';
       const pad = parts.gear.find(g => g.name.includes(tag) && g.isEnabled());
       if (pad) extraOriginals.push(pad);
-      break;
-    }
-    case 'leg': {
-      const wantSide: 'left' | 'right' = side
-        ?? (parts.leftThigh.isEnabled() ? 'left' : 'right');
-      const legPieces = pickLeg(wantSide);
-      if (legPieces.length === 0) return null;
-      primaryOriginal = legPieces[0];
-      for (let i = 1; i < legPieces.length; i++) extraOriginals.push(legPieces[i]!);
-      break;
-    }
-    case 'chest': {
-      // Centre-mass kill — peel off the vest plate as a token chunk so
-      // the corpse looks mutilated even when no limb came off. The
-      // torso itself stays so the body is still recognisable.
-      const plate = parts.gear.find(g => g.name.includes('vest-plate') && g.isEnabled());
-      if (!plate) return null;
-      primaryOriginal = plate;
-      break;
     }
   }
 

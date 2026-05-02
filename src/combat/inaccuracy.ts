@@ -14,10 +14,12 @@ export interface ShooterMotion {
   /** True if currently airborne. */
   inAir: boolean;
   crouching: boolean;
-  /** Number of arms blown off (0..2). Adds a flat cone so even a
-   *  stationary one-armed shooter can't tap-hold a tight aim, and a
-   *  no-armed shooter is essentially shot-gunning. */
-  armsGone?: number;
+  /** Extra cone (degrees) from missing arm segments. Computed via
+   *  `armInaccuracyDeg(character)`: a missing hand wobbles the grip
+   *  (+1°), a missing forearm makes you one-handed (+2.5°), a missing
+   *  upper arm leaves only a stump on that side (+4°). Both sides
+   *  stack additively so a no-armed shooter is essentially shotgunning. */
+  armPenaltyDeg?: number;
 }
 
 /** Inaccuracy in degrees (half-angle of error cone).
@@ -29,10 +31,7 @@ export interface ShooterMotion {
  *  spray pattern's per-shot offset still cause shots to drift; what's
  *  removed is the gun's random base-cone wiggle while perfectly still. */
 export function computeInaccuracy(def: WeaponDef, motion: ShooterMotion): number {
-  // One-armed: +2.5° cone. Both arms gone: stacked penalty (+6°)
-  // — the gun is somehow still firing but accuracy is a memory.
-  const arms = motion.armsGone ?? 0;
-  const armPenaltyDeg = arms === 0 ? 0 : arms === 1 ? 2.5 : 6.0;
+  const armPenaltyDeg = motion.armPenaltyDeg ?? 0;
   const stationary = motion.speed < 1.0 && !motion.inAir;
   if (stationary) return armPenaltyDeg;
 

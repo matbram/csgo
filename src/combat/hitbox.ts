@@ -1,25 +1,34 @@
-/** Per-limb hitbox model. The character's body is divided into seven
- *  primitives that match the multi-part humanoid mesh:
+/** Per-segment hitbox model. The character's body is divided into 14
+ *  primitives matching the multi-part humanoid mesh:
  *
  *    head        sphere at currentEye + 0.06
  *    chest       AABB on the torso (chest band of the torso box)
  *    stomach     AABB on the pelvis
- *    leftArm     vertical cylinder on the left side
- *    rightArm    vertical cylinder on the right side
- *    leftLeg     vertical cylinder on the left side
- *    rightLeg    vertical cylinder on the right side
+ *    upperArm    cylinder y=[1.09, 1.45]   (shoulder → elbow)    × 2 sides
+ *    forearm     cylinder y=[0.82, 1.09]   (elbow → wrist)       × 2 sides
+ *    hand        cylinder y=[0.62, 0.82]   (wrist → fingertips)  × 2 sides
+ *    thigh       cylinder y=[0.48, 0.89]   (hip → knee)          × 2 sides
+ *    shin        cylinder y=[0.06, 0.48]   (knee → ankle)        × 2 sides
+ *    foot        OBB y=[0.00, 0.10]        (toe-forward box)     × 2 sides
  *
- *  Returning `side` along with `kind` lets the combat system route a
- *  hit to the correct per-side damage counter so a leg/arm blown off
- *  comes off the right side of the body. Yaw is included on the pose
- *  so left/right are computed in the character's local frame — when
- *  the bot turns, their left arm tracks with them.
+ *  The raycaster returns BOTH a coarse `kind` (drives damage multiplier
+ *  in the CS:GO formula: head/chest/stomach/arm/leg) and a precise
+ *  `segment` (drives dismemberment routing). All limb cylinders also
+ *  return their `side` so torn-off pieces leave the right side of the
+ *  body.
  *
  *  Crouching shrinks vertically: every limb's height collapses by the
  *  same height/1.80 ratio.
  */
 
 import type { HitboxKind } from './damage';
+import type { LimbSegmentKind, LimbSide } from '../entities/character';
+
+/** Anatomical piece struck by a ray. Includes the centre-mass kinds
+ *  (head/chest/stomach) plus the six per-arm/per-leg segments. */
+export type HitboxSegment =
+  | 'head' | 'chest' | 'stomach'
+  | LimbSegmentKind;
 
 export interface HitboxPose {
   /** Capsule base position (world). */
@@ -36,10 +45,15 @@ export interface HitboxPose {
 }
 
 export interface HitboxRayHit {
+  /** Coarse damage class (head/chest/stomach/arm/leg). Drives the CS:GO
+   *  damage multiplier — hand and foot inherit arm/leg respectively. */
   kind: HitboxKind;
+  /** Precise anatomical segment — used by the dismemberment system to
+   *  pick which mesh tears off the corpse. */
+  segment: HitboxSegment;
   /** Side that took the hit. Null for centre-line hits (head /
    *  chest / stomach). 'left' or 'right' for arms and legs. */
-  side: 'left' | 'right' | null;
+  side: LimbSide | null;
   /** Distance from ray origin to first intersection. */
   t: number;
   /** World-space hit point. */
@@ -49,15 +63,24 @@ export interface HitboxRayHit {
 }
 
 const HEAD_RADIUS = 0.13;
-/** Radius of an arm cylinder. The mesh forearm is ~0.11 wide; we use
- *  a slightly fatter cylinder so an aimed shot doesn't slip past. */
-const ARM_RADIUS = 0.10;
-/** Radius of a leg cylinder. */
-const LEG_RADIUS = 0.13;
+/** Per-segment cylinder radii. Hand/foot are smaller targets — fitting
+ *  for the anatomy and for the gameplay (a hand shot is harder to land
+ *  than a thigh shot). */
+const UPPER_ARM_RADIUS = 0.10;
+const FOREARM_RADIUS = 0.09;
+const HAND_RADIUS = 0.08;
+const THIGH_RADIUS = 0.13;
+const SHIN_RADIUS = 0.11;
 /** Local (yaw=0, pre-rotation) X offsets for limb cylinders, matching
  *  the humanoid mesh build. */
 const ARM_X = 0.31;
 const LEG_X = 0.11;
+/** Foot is a forward-projecting box (toe ahead of the ankle) — a
+ *  vertical cylinder is a poor shape, so we use an OBB matching the
+ *  mesh: width 0.20 × depth 0.30, centred at z=+0.04 in body-local. */
+const FOOT_HALF_X = 0.10;
+const FOOT_HALF_Z = 0.15;
+const FOOT_LOCAL_Z = 0.04;
 
 export function raycastHitbox(
   ox: number, oy: number, oz: number,
@@ -80,18 +103,21 @@ export function raycastHitbox(
   const crouch = Math.max(0.55, pose.height / 1.80);
 
   let bestKind: HitboxKind | null = null;
-  let bestSide: 'left' | 'right' | null = null;
+  let bestSegment: HitboxSegment | null = null;
+  let bestSide: LimbSide | null = null;
   let bestT = Infinity;
   let bestY = 0;
 
   const considerHit = (
     t: number,
     kind: HitboxKind,
-    side: 'left' | 'right' | null,
+    segment: HitboxSegment,
+    side: LimbSide | null,
   ): void => {
     if (t <= 0 || t >= maxT || t >= bestT) return;
     bestT = t;
     bestKind = kind;
+    bestSegment = segment;
     bestSide = side;
     bestY = oy + dy * t;
   };
@@ -103,7 +129,7 @@ export function raycastHitbox(
     dx, dy, dz,
     HEAD_RADIUS, maxT,
   );
-  if (headT !== null) considerHit(headT, 'head', null);
+  if (headT !== null) considerHit(headT, 'head', 'head', null);
 
   // ---- Torso AABB (chest) ----
   // Centered at body-local (0, 1.32 * crouch, 0), size 0.46 × 0.50 × 0.28.
@@ -116,7 +142,7 @@ export function raycastHitbox(
     torsoCY - torsoH / 2, torsoCY + torsoH / 2,
     maxT,
   );
-  if (torsoT !== null) considerHit(torsoT, 'chest', null);
+  if (torsoT !== null) considerHit(torsoT, 'chest', 'chest', null);
 
   // ---- Pelvis AABB (stomach) ----
   const pelvisCY = pose.baseY + 0.99 * crouch;
@@ -128,45 +154,98 @@ export function raycastHitbox(
     pelvisCY - pelvisH / 2, pelvisCY + pelvisH / 2,
     maxT,
   );
-  if (pelvisT !== null) considerHit(pelvisT, 'stomach', null);
+  if (pelvisT !== null) considerHit(pelvisT, 'stomach', 'stomach', null);
 
-  // ---- Arms ----
-  // Cylinders span body-local y from upper-arm top to forearm bottom.
-  // Upper arm centre y=1.27, height 0.36 → top 1.45. Forearm centre
-  // y=0.85, height 0.42 → bottom 0.64. So one cylinder y=[0.64, 1.45]
-  // (scaled by crouch).
-  const armBottom = pose.baseY + 0.64 * crouch;
-  const armTop = pose.baseY + 1.45 * crouch;
+  // ---- Arms: three stacked cylinders per side ----
+  // Y bands match the mesh: upperArm 1.09–1.45, forearm 0.82–1.09,
+  // hand 0.62–0.82. Shrink with the same crouch ratio so the limbs
+  // fold with the body.
   for (const side of ['left', 'right'] as const) {
     const lx = side === 'left' ? -ARM_X : ARM_X;
     const { wx, wz } = worldOffset(lx, 0);
-    const t = rayVerticalCylinder(
-      ox, oy, oz, dx, dy, dz,
-      wx, wz, ARM_RADIUS,
-      armBottom, armTop, maxT,
-    );
-    if (t !== null) considerHit(t, 'arm', side);
+
+    // Upper arm.
+    {
+      const yBot = pose.baseY + 1.09 * crouch;
+      const yTop = pose.baseY + 1.45 * crouch;
+      const t = rayVerticalCylinder(
+        ox, oy, oz, dx, dy, dz,
+        wx, wz, UPPER_ARM_RADIUS,
+        yBot, yTop, maxT,
+      );
+      if (t !== null) considerHit(t, 'arm', 'upperArm', side);
+    }
+    // Forearm.
+    {
+      const yBot = pose.baseY + 0.82 * crouch;
+      const yTop = pose.baseY + 1.09 * crouch;
+      const t = rayVerticalCylinder(
+        ox, oy, oz, dx, dy, dz,
+        wx, wz, FOREARM_RADIUS,
+        yBot, yTop, maxT,
+      );
+      if (t !== null) considerHit(t, 'arm', 'forearm', side);
+    }
+    // Hand.
+    {
+      const yBot = pose.baseY + 0.62 * crouch;
+      const yTop = pose.baseY + 0.82 * crouch;
+      const t = rayVerticalCylinder(
+        ox, oy, oz, dx, dy, dz,
+        wx, wz, HAND_RADIUS,
+        yBot, yTop, maxT,
+      );
+      if (t !== null) considerHit(t, 'arm', 'hand', side);
+    }
   }
 
-  // ---- Legs ----
-  // Thigh centre y=0.69 height 0.40 → top 0.89. Foot top y≈0.08. So
-  // one cylinder y=[0.05, 0.89] (scaled).
-  const legBottom = pose.baseY + 0.05 * crouch;
-  const legTop = pose.baseY + 0.89 * crouch;
+  // ---- Legs: thigh / shin cylinders + foot OBB per side ----
   for (const side of ['left', 'right'] as const) {
     const lx = side === 'left' ? -LEG_X : LEG_X;
     const { wx, wz } = worldOffset(lx, 0);
-    const t = rayVerticalCylinder(
-      ox, oy, oz, dx, dy, dz,
-      wx, wz, LEG_RADIUS,
-      legBottom, legTop, maxT,
-    );
-    if (t !== null) considerHit(t, 'leg', side);
+
+    // Thigh.
+    {
+      const yBot = pose.baseY + 0.48 * crouch;
+      const yTop = pose.baseY + 0.89 * crouch;
+      const t = rayVerticalCylinder(
+        ox, oy, oz, dx, dy, dz,
+        wx, wz, THIGH_RADIUS,
+        yBot, yTop, maxT,
+      );
+      if (t !== null) considerHit(t, 'leg', 'thigh', side);
+    }
+    // Shin.
+    {
+      const yBot = pose.baseY + 0.06 * crouch;
+      const yTop = pose.baseY + 0.48 * crouch;
+      const t = rayVerticalCylinder(
+        ox, oy, oz, dx, dy, dz,
+        wx, wz, SHIN_RADIUS,
+        yBot, yTop, maxT,
+      );
+      if (t !== null) considerHit(t, 'leg', 'shin', side);
+    }
+    // Foot — toe-forward OBB. Centred in world at the leg's X with a
+    // forward Z offset matching the mesh. Foot doesn't crouch-shrink
+    // (the mesh stays full size at floor level).
+    {
+      const footFootprint = worldOffset(lx, FOOT_LOCAL_Z);
+      const t = rayObbXZ(
+        ox, oy, oz, dx, dy, dz,
+        footFootprint.wx, footFootprint.wz, cy, sy,
+        FOOT_HALF_X, FOOT_HALF_Z,
+        pose.baseY + 0.00, pose.baseY + 0.10,
+        maxT,
+      );
+      if (t !== null) considerHit(t, 'leg', 'foot', side);
+    }
   }
 
-  if (bestKind === null) return null;
+  if (bestKind === null || bestSegment === null) return null;
   return {
     kind: bestKind,
+    segment: bestSegment,
     side: bestSide,
     t: bestT,
     hitX: ox + dx * bestT,

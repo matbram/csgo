@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { FirePatchField } from './firePatch';
 import type { Character } from '../entities/character';
+import { makeFreshLimbs } from '../entities/character';
 
 function makeChar(id: string, x: number, z: number): Character {
   return {
@@ -12,10 +13,7 @@ function makeChar(id: string, x: number, z: number): Character {
     hp: 100, armor: 0, helmet: false, hasKit: false, alive: true,
     inventory: null,
     speed: 0, inAir: false, crouching: false,
-    leftLegDamage: 0, rightLegDamage: 0,
-    leftArmDamage: 0, rightArmDamage: 0,
-    leftLegDetached: false, rightLegDetached: false,
-    leftArmDetached: false, rightArmDetached: false,
+    limbs: makeFreshLimbs(),
   };
 }
 

@@ -22,8 +22,23 @@ import { getScene } from '../engine/scene';
 import { events } from '../engine/events';
 import { time } from '../engine/time';
 import type { WorldQuery } from '../player/physics';
-import type { HumanoidParts } from '../entities/humanoid';
+import type { HumanoidParts, DetachKind } from '../entities/humanoid';
 import { detachBodyPart } from '../entities/humanoid';
+
+/** How hard each anatomical piece kicks when it tears off. Tuned so
+ *  the head and a torn-off thigh feel chunky, while a hand or foot
+ *  is a lighter flick — matches the relative mass of the parts. */
+const LAUNCH_PROFILE: Record<DetachKind, { speed: number; up: number }> = {
+  head: { speed: 6.5, up: 4.5 },
+  chest: { speed: 4.0, up: 3.0 },
+  stomach: { speed: 3.5, up: 2.5 },
+  upperArm: { speed: 5.0, up: 3.5 },
+  forearm: { speed: 4.0, up: 3.0 },
+  hand: { speed: 3.0, up: 2.5 },
+  thigh: { speed: 5.5, up: 3.5 },
+  shin: { speed: 4.5, up: 3.0 },
+  foot: { speed: 3.5, up: 2.5 },
+};
 
 const TRACER_DURATION_MS = 70;
 const IMPACT_DURATION_MS = 350;
@@ -520,13 +535,13 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
   events.on('combat:hit', ({
     hitX, hitY, hitZ, victimFootY,
     dirX, dirY, dirZ,
-    headshot, killing, corpseHit, limbDetached, hitbox, victimId,
+    headshot, killing, corpseHit, limbsDetached, segment, side, victimId,
   }) => {
     if (!bloodParticles) return;
     // Treat corpse hits and in-flight limb detachments the same as
     // killing hits for visuals: heavy blood, multiple ground decals,
-    // wall splatter, and a piece torn off.
-    const dismember = killing || corpseHit || limbDetached !== null;
+    // wall splatter, and pieces torn off.
+    const dismember = killing || corpseHit || limbsDetached.length > 0;
 
     // 1) Particle spurt. Heavy on headshots / killing / corpse hits.
     bloodParticles.emitter = new Vector3(hitX, hitY, hitZ);
@@ -566,40 +581,39 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
       );
     }
 
-    // 4) Dismemberment — fires on a killing hit AND on every later
-    //    shot into the corpse. Picks the limb that matches the hitbox
-    //    (random for corpse hits, see combat.fire). detachBodyPart
-    //    silently no-ops if the limb is already missing, so a body
-    //    eventually runs out of pieces to lose.
+    // 4) Dismemberment — runs on killing hits, corpse hits, and any
+    //    severance the simulation reports. The `limbsDetached` array
+    //    is the authoritative signal from the simulation; for killing
+    //    or corpse hits where nothing was explicitly severed we fall
+    //    back to detaching the precise segment the bullet found.
+    //    detachBodyPart silently no-ops if the piece is already
+    //    missing, so a body eventually runs out of pieces to lose.
     if (dismember && partsForId) {
       const parts = partsForId(victimId);
       if (parts) {
-        // The `limbDetached` payload (kind + side) is the most
-        // authoritative signal: combat.fire only sets it when the
-        // counter actually crossed the threshold for that side. Fall
-        // back to the hitbox kind for killing/corpse hits where no
-        // explicit limb tear was recorded.
-        const partKind: 'head' | 'arm' | 'leg' | 'chest' =
-          limbDetached?.kind === 'leg' ? 'leg'
-          : limbDetached?.kind === 'arm' ? 'arm'
-          : hitbox === 'head' ? 'head'
-          : hitbox === 'leg' ? 'leg'
-          : hitbox === 'arm' ? 'arm'
-          : 'chest';
-        const detached = detachBodyPart(parts, partKind, limbDetached?.side);
-        if (detached) {
-          // Initial velocity in the bullet's direction, with random
-          // splay. Heads kick harder than shoulders so the visual is
-          // unambiguous on a headshot kill.
-          const baseSpeed = partKind === 'head' ? 6.5 : 4.5;
-          const upBoost = partKind === 'head' ? 4.5 : 3.0;
+        type DetachReq = { kind: DetachKind; side?: 'left' | 'right' };
+        const requests: DetachReq[] = [];
+        if (limbsDetached.length > 0) {
+          for (const ld of limbsDetached) {
+            requests.push({ kind: ld.segment, side: ld.side });
+          }
+        } else {
+          // Killing or corpse hit with no explicit severance: detach
+          // the segment the bullet hit (head on a head kill, thigh
+          // on a leg kill, etc.). Side is null for centre-line hits.
+          requests.push({ kind: segment, side: side ?? undefined });
+        }
+        for (const req of requests) {
+          const detached = detachBodyPart(parts, req.kind, req.side);
+          if (!detached) continue;
+          const launchProfile = LAUNCH_PROFILE[req.kind];
           const splay = 1.5;
           const launch = (m: Mesh, scale: number, spinScale: number): void => {
             pushGib(
               m,
-              dirX * baseSpeed * scale + (Math.random() - 0.5) * splay,
-              upBoost + Math.random() * 1.5,
-              dirZ * baseSpeed * scale + (Math.random() - 0.5) * splay,
+              dirX * launchProfile.speed * scale + (Math.random() - 0.5) * splay,
+              launchProfile.up + Math.random() * 1.5,
+              dirZ * launchProfile.speed * scale + (Math.random() - 0.5) * splay,
               spinScale,
             );
           };

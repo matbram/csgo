@@ -8,6 +8,7 @@ import type { MatchPlayerSlot } from '../match/match';
 import type { Character } from '../entities/character';
 import { defaultInventory } from '../weapons/inventory';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { makeFreshLimbs } from '../entities/character';
 
 function makeSlot(id: string, side: 'T' | 'CT', money: number): MatchPlayerSlot {
   return {
@@ -26,10 +27,7 @@ function makeChar(side: 'T' | 'CT'): Character {
     hp: 100, armor: 0, helmet: false, hasKit: false, alive: true,
     inventory: defaultInventory(side),
     speed: 0, inAir: false, crouching: false,
-    leftLegDamage: 0, rightLegDamage: 0,
-    leftArmDamage: 0, rightArmDamage: 0,
-    leftLegDetached: false, rightLegDetached: false,
-    leftArmDetached: false, rightArmDetached: false,
+    limbs: makeFreshLimbs(),
   };
 }
 
