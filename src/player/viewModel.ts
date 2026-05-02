@@ -330,14 +330,19 @@ export class ViewModel {
       ? stabCurve(this.swingT)
       : swingCurve(this.swingT, this.swingDir);
 
-    // ADS pose: lerp the hand toward a centered, slightly raised
-    // forward offset. Subtracts the default right-shift, lifts the
-    // sights to the crosshair line, and pushes the gun a touch further
-    // forward so the rear sight doesn't clip into the camera.
+    // ADS pose: push the gun forward (smaller on screen so the body
+    // doesn't dominate the centre) and lift it just enough to drop the
+    // front sight onto the crosshair. Cancelling the default right-shift
+    // (-0.18 on x) centres the gun horizontally; the +0.135 y matches
+    // the model's rear-sight blade height (≈ 0.045) plus the default
+    // -0.18 hand drop, so the iron sights end up on the screen centre.
+    // The +0.30 z setback keeps the slide and grip from filling the
+    // crosshair area — at ~70 cm from the eye the back-of-gun silhouette
+    // is small enough that you can clearly see the target around it.
     this.adsProgress = expSmooth(this.adsProgress, this.adsTarget, 80, dtMs);
     const adsX = -0.18 * this.adsProgress;
-    const adsY =  0.14 * this.adsProgress;
-    const adsZ =  0.06 * this.adsProgress;
+    const adsY =  0.135 * this.adsProgress;
+    const adsZ =  0.30 * this.adsProgress;
 
     const base = this.hand.position;
     base.x = 0.18 + bobX + this.smoothedKickX * 0.04 + swing.posX + adsX;
