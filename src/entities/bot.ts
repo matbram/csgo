@@ -183,25 +183,24 @@ export function stepBot(
       bot.path = result;
       bot.pathIdx = 0;
       if (debugLog.isEnabled('bots')) {
-        debugLog.bots('path.computed', {
-          id: bot.id, start, goal: bot.objective,
-          pathLen: result.length, simMs: nowMs,
+        debugLog.bots('path ok', {
+          t: nowMs, id: bot.id,
+          start, goal: bot.objective, len: result.length,
         });
       }
     } else if (hadBudget) {
       bot.nextPlanAfterMs = nowMs + PATH_RETRY_MS;
       if (debugLog.isEnabled('bots')) {
-        debugLog.bots('path.failed', {
-          id: bot.id, start, goal: bot.objective,
-          backoffUntilMs: bot.nextPlanAfterMs, simMs: nowMs,
-          reason: 'request returned null after burning budget (unreachable or no snap)',
+        debugLog.bots('path FAIL', {
+          t: nowMs, id: bot.id,
+          start, goal: bot.objective,
+          backoffMs: PATH_RETRY_MS,
+          reason: 'unreachable or unsnappable',
         });
       }
-    } else if (debugLog.isEnabled('bots')) {
-      debugLog.bots('path.deferred', {
-        id: bot.id, reason: 'path-service budget exhausted', simMs: nowMs,
-      });
     }
+    // Note: budget-exhausted skips are silent — they happen every frame
+    // until the path service catches up and would dwarf the buffer.
   }
 
   // Compute wishDir toward the current waypoint, unless the caller has

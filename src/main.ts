@@ -223,6 +223,9 @@ function bootstrap(): void {
   // Round-end → next round transition handled in sim loop.
   let roundEndApplied = false;
   let lastRoundNumber = 0;
+  // Per-bot transition tracking for the 'bots' debug channel — log a
+  // single line on transitions in/out of "stuck", not every frame.
+  const wasStuck = new Set<string>();
   // Sim ms when the current round entered live phase (post-freeze).
   // Used by the bot brain's grenade-lineup trigger windows.
   let liveStartedAtMs = 0;
@@ -323,23 +326,26 @@ function bootstrap(): void {
     applyBlackboardObjectives(tBoard, tBots);
     applyBlackboardObjectives(ctBoard, ctBots);
     debugLog.round('refreshBots', {
+      t: time.simMs,
       round,
-      simMs: time.simMs,
-      tStrategy: tBoard.strategy,
-      ctStrategy: ctBoard.strategy,
-      tBots: tBots.map(b => ({
-        id: b.id, alive: b.character.alive,
-        team: b.character.team, aiDisabled: b.aiDisabled,
-        objective: b.objective,
-        pos: { x: b.character.pos.x, z: b.character.pos.z },
-      })),
-      ctBots: ctBots.map(b => ({
-        id: b.id, alive: b.character.alive,
-        team: b.character.team, aiDisabled: b.aiDisabled,
-        objective: b.objective,
-        pos: { x: b.character.pos.x, z: b.character.pos.z },
-      })),
+      tStrat: tBoard.strategy,
+      ctStrat: ctBoard.strategy,
+      tWithObj: tBots.filter(b => b.objective !== null).length + '/' + tBots.length,
+      ctWithObj: ctBots.filter(b => b.objective !== null).length + '/' + ctBots.length,
     });
+    // Per-bot one-liners so the team's full assignment is visible
+    // without 9 nested objects in a single dump.
+    if (debugLog.isEnabled('round')) {
+      for (const b of [...tBots, ...ctBots]) {
+        debugLog.round('  bot', {
+          t: time.simMs,
+          id: b.id,
+          team: b.character.team,
+          obj: b.objective ?? '-',
+          pos: { x: b.character.pos.x, z: b.character.pos.z },
+        });
+      }
+    }
   };
 
   const applyBlackboardObjectives = (
@@ -649,29 +655,6 @@ function bootstrap(): void {
       const fwdX = fwdRef.x;
       const fwdY = fwdRef.y;
       const fwdZ = fwdRef.z;
-      if (debugLog.isEnabled('shooting') && input.wasMousePressed(0)) {
-        // Log only on the trigger edge so we don't spam every tick of a
-        // held auto burst — that would drown out the per-shot detail in
-        // combat.fire below. The full trace per shot still goes via
-        // combat.fire / inaccuracy logs.
-        debugLog.shooting('main.firePressed', {
-          weapon: activeInst.def.id,
-          scopeLevel: activeInst.scopeLevel,
-          camPos: { x: eyeX, y: eyeY, z: eyeZ },
-          camFwd: { x: fwdX, y: fwdY, z: fwdZ },
-          ctrlPos: {
-            x: ctrl.state.pos.x,
-            y: ctrl.state.pos.y + ctrl.state.currentEye,
-            z: ctrl.state.pos.z,
-          },
-          ctrlYawPitch: { yaw: ctrl.state.yaw, pitch: ctrl.state.pitch },
-          shooterSpeed: localPlayer.character.speed,
-          inAir: localPlayer.character.inAir,
-          crouching: localPlayer.character.crouching,
-          sprayIndex: activeInst.sprayIndex,
-          ammoMag: activeInst.ammoMag,
-        });
-      }
 
       // Grenades are thrown, not hitscan-fired. LMB = full throw, RMB =
       // underhand. After a successful throw the consumed instance is
@@ -803,31 +786,35 @@ function bootstrap(): void {
           // While engaging the brain owns yaw; let it through unmodified.
           faceMovement: decision.followPath,
         });
-        // Per-bot trace, gated by channel so it's silent in normal play.
-        // We log only on a state change OR when the bot is supposed to
-        // be moving but isn't — the second one is the smoking gun for
-        // "everyone stands at spawn" complaints.
+        // Per-bot trace, gated on the 'bots' channel. We log only on
+        // transitions: a brain state change, OR the moment a bot
+        // crosses into / out of "stuck" (followPath but ~0 speed for
+        // two ticks while an objective is set). Continuous spam from a
+        // bot anchored at its callout would otherwise bury the buffer.
         if (debugLog.isEnabled('bots')) {
           const stateChanged = prevState !== bot.brain.state;
-          const stuck = decision.followPath
+          const isStuck = decision.followPath
             && bot.character.speed < 0.1
             && prevSpeed < 0.1
             && bot.objective !== null;
-          if (stateChanged || stuck) {
-            debugLog.bots(stuck ? 'bot.stuck' : 'bot.stateChange', {
-              id: bot.id, team: bot.character.team,
-              prevState, newState: bot.brain.state,
-              followPath: decision.followPath,
-              hasObjective: bot.objective !== null,
-              objective: bot.objective,
-              hasPath: bot.path !== null,
-              pathLen: bot.path?.length ?? 0,
-              pathIdx: bot.pathIdx,
-              pos: { x: bot.character.pos.x, y: bot.character.pos.y, z: bot.character.pos.z },
-              speed: bot.character.speed,
-              nextPlanAfterMs: bot.nextPlanAfterMs,
-              simMs: time.simMs,
-            });
+          const stuckEdge = isStuck !== wasStuck.has(bot.id);
+          if (stateChanged || stuckEdge) {
+            if (isStuck) wasStuck.add(bot.id);
+            else wasStuck.delete(bot.id);
+            debugLog.bots(
+              stateChanged ? `state ${prevState}→${bot.brain.state}` :
+                isStuck ? 'stuck' : 'unstuck',
+              {
+                t: time.simMs,
+                id: bot.id,
+                team: bot.character.team,
+                follow: decision.followPath,
+                obj: bot.objective ?? '-',
+                path: bot.path ? `${bot.pathIdx}/${bot.path.length}` : '-',
+                pos: bot.character.pos,
+                spd: bot.character.speed,
+              },
+            );
           }
         }
       }

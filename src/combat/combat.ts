@@ -91,28 +91,18 @@ export class CombatSystem {
       scatterDeg,
     );
 
-    // Per-shot trace: aim ray, the spray-pattern entry we picked, the
-    // scatter cone we added, and the resulting direction. Compare aim
-    // vs final to see exactly how far off the bullet is from the
-    // crosshair. Off only by `scatterDeg` of cone when stationary +
-    // first shot (should be 0,0,0 deviation).
-    if (debugLog.isEnabled('shooting')) {
-      const aimToFinalDeg =
+    // We log one terse line per shot (only for the local player — bot
+    // gunfire would dwarf the buffer in seconds). The interesting
+    // numbers for "is the bullet going where I aim" are sprayIndex,
+    // inaccuracyDeg, and aimDriftDeg (angle between view ray and the
+    // resolved bullet direction). Stationary first shot should have
+    // aimDrift=0.
+    let aimDriftDeg = 0;
+    if (debugLog.isEnabled('shooting') && opts.shooter.id === 'local') {
+      aimDriftDeg =
         Math.acos(Math.max(-1, Math.min(1,
           opts.fwdX * finalDir.x + opts.fwdY * finalDir.y + opts.fwdZ * finalDir.z,
         ))) * 180 / Math.PI;
-      debugLog.shooting('combat.fire', {
-        shooter: opts.shooter.id,
-        weapon: weapon.id,
-        sprayIndex: opts.sprayIndex,
-        sprayPatternEntry: { sprayX, sprayY },
-        inaccuracyDeg: opts.inaccuracyDeg,
-        scatterDeg,
-        origin: { x: opts.ox, y: opts.oy, z: opts.oz },
-        aim: { x: opts.fwdX, y: opts.fwdY, z: opts.fwdZ },
-        finalDir: { x: finalDir.x, y: finalDir.y, z: finalDir.z },
-        aimToFinalDeg,
-      });
     }
 
     // Melee weapons are short-range — anything past the falloff envelope
@@ -203,11 +193,16 @@ export class CombatSystem {
           tMs: time.simMs,
         });
       }
-      if (debugLog.isEnabled('shooting')) {
-        debugLog.shooting('combat.hit.character', {
-          shooter: opts.shooter.id, victim: bestVictim.id, hitbox: bestKind,
-          distance: closestT, damage: hpDelta, killing,
-          point: bestPoint,
+      if (debugLog.isEnabled('shooting') && opts.shooter.id === 'local') {
+        debugLog.shooting('shot', {
+          weapon: weapon.id,
+          spray: opts.sprayIndex,
+          inacc: opts.inaccuracyDeg,
+          drift: aimDriftDeg,
+          hit: `${bestVictim.id}/${bestKind}`,
+          dmg: hpDelta,
+          kill: killing,
+          dist: closestT,
         });
       }
       return {
@@ -232,10 +227,15 @@ export class CombatSystem {
         distance: worldT,
         tMs: time.simMs,
       });
-      if (debugLog.isEnabled('shooting')) {
-        debugLog.shooting('combat.hit.world', {
-          shooter: opts.shooter.id, surface: worldHit.surface,
-          distance: worldT, point: { x: ex, y: ey, z: ez },
+      if (debugLog.isEnabled('shooting') && opts.shooter.id === 'local') {
+        debugLog.shooting('shot', {
+          weapon: weapon.id,
+          spray: opts.sprayIndex,
+          inacc: opts.inaccuracyDeg,
+          drift: aimDriftDeg,
+          hit: `wall/${worldHit.surface}`,
+          dist: worldT,
+          end: { x: ex, y: ey, z: ez },
         });
       }
       return {
@@ -246,9 +246,14 @@ export class CombatSystem {
       };
     }
 
-    if (debugLog.isEnabled('shooting')) {
-      debugLog.shooting('combat.miss', {
-        shooter: opts.shooter.id, distance: maxRange,
+    if (debugLog.isEnabled('shooting') && opts.shooter.id === 'local') {
+      debugLog.shooting('shot', {
+        weapon: weapon.id,
+        spray: opts.sprayIndex,
+        inacc: opts.inaccuracyDeg,
+        drift: aimDriftDeg,
+        hit: 'miss',
+        dist: maxRange,
       });
     }
     // Miss into the void.
