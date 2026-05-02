@@ -327,9 +327,10 @@ html, body {
 }
 .ai-debug-panel .ai-strategy .t  { color: #d49a4e; }
 .ai-debug-panel .ai-strategy .ct { color: #6a9ed6; }
+.ai-debug-panel .ai-strategy .phase { color: #98896c; margin-left: auto; }
 .ai-debug-panel .ai-row {
   display: grid;
-  grid-template-columns: 70px 78px 56px 28px 56px 50px 80px 32px;
+  grid-template-columns: 70px 78px 56px 28px 56px 50px 80px 32px 70px 50px;
   column-gap: 6px;
   padding: 1px 0;
 }
@@ -342,6 +343,8 @@ html, body {
 .ai-debug-panel .ai-row .ammo  { color: #ffe9c2; text-align: right; }
 .ai-debug-panel .ai-row .target{ color: #cfd8e3; }
 .ai-debug-panel .ai-row .known { color: #98896c; text-align: right; }
+.ai-debug-panel .ai-row .action{ color: #b3d4ff; }
+.ai-debug-panel .ai-row .threat{ color: #d09090; text-align: right; }
 
 /* ---------- Sniper scope overlay ---------- */
 .scope-overlay {

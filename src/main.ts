@@ -56,6 +56,8 @@ import { NavGrid } from './nav/grid';
 import { PathService } from './nav/pathService';
 import { makeBlackboard, aggregateKnown, refreshTeamRoster, aliveCount } from './ai/blackboard';
 import { planRoundStart, reactToBombPlanted } from './ai/strategist';
+import { setMatchSeed } from './ai/rng';
+import { buildWorldStateView, type WorldStateView } from './ai/world/state';
 import type { Character } from './entities/character';
 import { pointInPolygon2D } from './map/world';
 import { makeMatch, beginRound, endRound, applyHalftime, stepMatch, type MatchState } from './match/match';
@@ -142,6 +144,15 @@ function bootstrap(): void {
   const pathService = new PathService(navGrid, { maxRequestsPerFrame: 2, cacheSize: 32 });
 
   // 7) Roster: 4 T bots (teammates of local), 5 CT bots (enemies).
+  // Seed the AI RNG before bots are constructed so each Brain forks a
+  // stable per-bot stream from the match seed. A `?seed=N` URL param
+  // overrides the wall-clock default — used for replaying a specific
+  // round during debugging.
+  const seedParam = new URLSearchParams(window.location.search).get('seed');
+  if (seedParam) {
+    const n = Number.parseInt(seedParam, 10);
+    if (Number.isFinite(n)) setMatchSeed(n);
+  }
   const bots: Bot[] = [];
   for (let i = 0; i < 4; i++) {
     const sp = tSpawns[(i + 1) % Math.max(1, tSpawns.length)] ?? startSpawn!;
@@ -239,6 +250,9 @@ function bootstrap(): void {
   // Used by the bot brain's grenade-lineup trigger windows.
   let liveStartedAtMs = 0;
   let lastSeenPhase: 'freeze' | 'live' | 'end' | null = null;
+  /** Last-built AI world view. Rebuilt every live tick; held across
+   *  freeze/end so the debug HUD has something to render. */
+  let worldView: WorldStateView | null = null;
 
   // Track local-player kills/deaths for scoreboard + economy.
   events.on('combat:kill', ({ attackerId, victimId, weapon }) => {
@@ -817,6 +831,20 @@ function bootstrap(): void {
       const tAlive = aliveCount(tBoard, bots) + localT;
       const ctAlive = aliveCount(ctBoard, bots) + localCT;
 
+      // Build the AI world view once per tick. Phase 0: only the debug
+      // HUD reads it; brain decisions still flow through the legacy
+      // BrainContext fields. Phase 3 cuts the planner over to reading
+      // here directly.
+      worldView = buildWorldStateView({
+        simMs: time.simMs,
+        liveSinceMs: liveStartedAtMs,
+        phase: 'live',
+        bomb: bombInfo,
+        bots,
+        tBoard, ctBoard,
+        localAlive: { T: localT, CT: localCT },
+      });
+
       for (const bot of bots) {
         if (!bot.character.alive) continue;
         // Skip the AI tick entirely while the local player is in this
@@ -843,6 +871,7 @@ function bootstrap(): void {
           spawnZ: spawnPos.z,
           grenades: grenadeSystem,
           liveSinceMs: liveStartedAtMs,
+          view: worldView!,
         };
         // Save state retargets the bot's path to spawn. We re-apply here
         // each tick so a transition out of save restores the strategist's
@@ -895,6 +924,19 @@ function bootstrap(): void {
         if (bot.aiDisabled) continue;
         bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
       }
+      // Keep the world view fresh during freeze/end so the debug HUD
+      // reflects the current roster, strategy, and known-enemy decay.
+      const localT2 = localPlayer.character.team === 'T' && localPlayer.character.alive ? 1 : 0;
+      const localCT2 = localPlayer.character.team === 'CT' && localPlayer.character.alive ? 1 : 0;
+      worldView = buildWorldStateView({
+        simMs: time.simMs,
+        liveSinceMs: liveStartedAtMs,
+        phase: curPhase === 'end' ? 'end' : 'freeze',
+        bomb: mirrorBomb(match.round?.bomb),
+        bots,
+        tBoard, ctBoard,
+        localAlive: { T: localT2, CT: localCT2 },
+      });
     }
 
     // Plant / defuse intent — read from the same E key. We assemble
@@ -1105,7 +1147,7 @@ function bootstrap(): void {
     );
 
     debugHud.update(renderDtMs);
-    aiDebugHud.update(bots, tBoard, ctBoard);
+    aiDebugHud.update(bots, tBoard, ctBoard, worldView);
     combatHud.update(localPlayer.character, performance.now());
     flashOverlay.update(localPlayer.character, time.simMs);
     matchEndHud.update(match);

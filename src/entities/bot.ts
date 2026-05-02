@@ -109,7 +109,7 @@ export function createBot(
   // an 11 ms phase per bot spreads them evenly across one tick window.
   const phaseMs = teamIdx * 11;
   const perception = new Perception(difficulty, phaseMs);
-  const brain = new Brain(difficulty, phaseMs);
+  const brain = new Brain(difficulty, phaseMs, id);
   return {
     id,
     character,

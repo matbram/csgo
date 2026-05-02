@@ -17,6 +17,7 @@ import { CreateLines } from '@babylonjs/core/Meshes/Builders/linesBuilder';
 import { getScene } from '../engine/scene';
 import type { Bot } from '../entities/bot';
 import type { TeamBlackboard } from '../ai/blackboard';
+import type { WorldStateView } from '../ai/world/state';
 
 interface PathLine {
   mesh: LinesMesh;
@@ -58,10 +59,20 @@ export class AiDebugHud {
   /** Update the panel + path lines. Called once per render frame; cheap
    *  enough that we don't gate on `enabled` for the panel-text update
    *  (it's invisible anyway when disabled). The expensive path-mesh
-   *  refresh is gated. */
-  update(bots: ReadonlyArray<Bot>, tBoard?: TeamBlackboard, ctBoard?: TeamBlackboard): void {
+   *  refresh is gated.
+   *
+   *  Phase 0: `view` is the new WorldStateView projection; when supplied
+   *  the panel renders from it (so the future planner / GOAP layers and
+   *  the HUD see the exact same data). Falls back to the legacy bot +
+   *  blackboard read when view is omitted. */
+  update(
+    bots: ReadonlyArray<Bot>,
+    tBoard?: TeamBlackboard,
+    ctBoard?: TeamBlackboard,
+    view?: WorldStateView | null,
+  ): void {
     if (!this.enabled) return;
-    this.refreshPanel(bots, tBoard, ctBoard);
+    this.refreshPanel(bots, tBoard, ctBoard, view ?? null);
     this.refreshPaths(bots);
   }
 
@@ -69,10 +80,19 @@ export class AiDebugHud {
     bots: ReadonlyArray<Bot>,
     tBoard?: TeamBlackboard,
     ctBoard?: TeamBlackboard,
+    view?: WorldStateView | null,
   ): void {
     const rows: string[] = [];
     rows.push('<div class="ai-debug-title">AI</div>');
-    if (tBoard || ctBoard) {
+    if (view) {
+      // Phase 0 view-derived header: confirms the WorldStateView is
+      // flowing (visible heartbeat: simMs / phase / per-side alive).
+      rows.push(`<div class="ai-strategy">
+        <span class="t">T(${view.teams.T.aliveCount}): ${escape(view.teams.T.strategy)}</span>
+        <span class="ct">CT(${view.teams.CT.aliveCount}): ${escape(view.teams.CT.strategy)}</span>
+        <span class="phase">${escape(view.phase)} t:${(view.simMs / 1000).toFixed(1)}s</span>
+      </div>`);
+    } else if (tBoard || ctBoard) {
       const tStrat = tBoard?.strategy ?? '-';
       const ctStrat = ctBoard?.strategy ?? '-';
       rows.push(`<div class="ai-strategy">
@@ -91,13 +111,17 @@ export class AiDebugHud {
       ) : null;
       const ammo = inst && inst.def.magazine > 0 ? `${inst.ammoMag}/${inst.ammoReserve}` : '-';
       const wpn = inst?.def.id ?? '-';
-      const known = bot.perception.known.size;
-      const status = c.alive ? bot.brain.state : 'DEAD';
+      const bv = view?.bots.get(bot.id);
+      const known = bv?.knownEnemyCount ?? bot.perception.known.size;
+      const status = c.alive ? (bv?.brainState ?? bot.brain.state) : 'DEAD';
       const teamCls = c.team === 'T' ? 't' : 'ct';
       const board = c.team === 'T' ? tBoard : ctBoard;
-      const role = board?.roleByBot.get(bot.id) ?? '-';
-      const obj = board?.objectiveByBot.get(bot.id);
-      const target = obj?.callout ?? '-';
+      const role = bv?.role ?? board?.roleByBot.get(bot.id) ?? '-';
+      const target = bv?.objectiveCallout ?? board?.objectiveByBot.get(bot.id)?.callout ?? '-';
+      // Phase 0: action / threat columns are placeholders surfaced from
+      // the view so phase 3+ can fill them without HUD changes.
+      const action = bv?.currentAction ?? '-';
+      const threat = bv ? bv.threatLevel.toFixed(2) : '-';
       rows.push(`<div class="ai-row ${teamCls}">
         <span class="id">${escape(bot.id)}</span>
         <span class="role">${escape(role)}</span>
@@ -107,6 +131,8 @@ export class AiDebugHud {
         <span class="ammo">${escape(ammo)}</span>
         <span class="target">${escape(target)}</span>
         <span class="known">k:${known}</span>
+        <span class="action">${escape(action)}</span>
+        <span class="threat">th:${escape(threat)}</span>
       </div>`);
     }
     this.panel.innerHTML = rows.join('');

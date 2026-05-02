@@ -24,6 +24,8 @@ import { pointInPolygon2D } from '../map/world';
 import type { TeamBlackboard } from './blackboard';
 import type { GrenadeLineup } from './grenadeLineups';
 import type { GrenadeSystem } from '../grenades/system';
+import { forkRng, getMatchSeed, type SeededRng } from './rng';
+import type { WorldStateView } from './world/state';
 
 export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload' | 'plant' | 'defuse' | 'save' | 'throwGrenade';
 
@@ -63,6 +65,11 @@ export interface BrainContext {
   /** Sim ms when the round entered live phase. Used to gate 'opening'
    *  lineups (only consider them within the first few seconds). */
   liveSinceMs: number;
+  /** Per-tick immutable world view shared across all AI layers. Phase 0
+   *  threads it through but the legacy decide() still reads from the
+   *  flat fields above. Phase 3 cuts the planner over to reading from
+   *  this view directly and the flat fields go away. */
+  view: WorldStateView;
 }
 
 export class Brain {
@@ -95,12 +102,19 @@ export class Brain {
   /** Sim ms before which we don't try to throw — used to give the bot a
    *  beat to get into position after picking up a lineup. */
   private throwReadyAtMs = 0;
+  /** Per-bot deterministic RNG, forked from the match seed by bot id.
+   *  Drives aim noise (+ future GOAP cost jitter). Each bot owns its own
+   *  stream so reordering bot evaluation in the loop doesn't shift any
+   *  bot's draws — replays stay stable. */
+  private readonly rng: SeededRng;
 
   constructor(
     private readonly difficulty: BotDifficulty,
     phaseMs: number,
+    botId: string,
   ) {
     this.nextDecisionMs = phaseMs;
+    this.rng = forkRng(getMatchSeed(), `brain:${botId}`);
   }
 
   /** Per sim-tick step. Returns an indication of whether the brain wants
@@ -121,8 +135,8 @@ export class Brain {
 
     // Resample aim noise on its own clock.
     if (nowMs >= this.noiseUntilMs) {
-      this.noiseYawDeg = gaussian() * this.difficulty.aimErrorDeg;
-      this.noisePitchDeg = gaussian() * this.difficulty.aimErrorDeg;
+      this.noiseYawDeg = this.rng.gaussian() * this.difficulty.aimErrorDeg;
+      this.noisePitchDeg = this.rng.gaussian() * this.difficulty.aimErrorDeg;
       this.noiseUntilMs = nowMs + this.difficulty.aimNoiseResampleMs;
     }
 
@@ -610,13 +624,6 @@ function aimRequest(bot: Bot, _mode: string): { ox: number; oy: number; oz: numb
 }
 
 function degToRad(d: number): number { return d * Math.PI / 180; }
-
-/** Approximate 0-mean gaussian via Box-Muller half-step (one sample). */
-function gaussian(): number {
-  const u = 1 - Math.random();
-  const v = Math.random();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v) * 0.5;
-}
 
 function lerpAngle(a: number, b: number, k: number): number {
   let diff = b - a;
