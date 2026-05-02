@@ -43,6 +43,12 @@ export interface EventMap {
     headshot: boolean;
     killing: boolean;
     hitX: number; hitY: number; hitZ: number;
+    /** Victim's foot Y at the time of impact — used by blood-decal
+     *  visuals to drop a pool on the surface they're standing on. */
+    victimFootY: number;
+    /** Direction the bullet was traveling when it hit (unit vector).
+     *  Used to offset blood spray away from the shooter. */
+    dirX: number; dirY: number; dirZ: number;
     distance: number;
     tMs: number;
   };

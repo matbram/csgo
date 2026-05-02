@@ -22,6 +22,10 @@ const TRACER_DURATION_MS = 70;
 const IMPACT_DURATION_MS = 350;
 const MAX_TRACERS = 32;
 const MAX_IMPACTS = 64;
+/** Maximum number of blood pool decals on the ground at once. When the
+ *  pool is exhausted the oldest entry is reused — this caps the
+ *  visual cost while keeping recent splatters visible. */
+const MAX_BLOOD_DECALS = 96;
 
 interface Tracer {
   mesh: Mesh;
@@ -35,11 +39,63 @@ interface Impact {
   active: boolean;
 }
 
+interface BloodDecal {
+  mesh: Mesh;
+  /** Wall time (ms) when this decal was placed — used as the
+   *  recency key for round-robin reuse when the pool is full. */
+  placedAtMs: number;
+  active: boolean;
+}
+
 let tracerPool: Tracer[] = [];
 let impactPool: Impact[] = [];
+let bloodPool: BloodDecal[] = [];
+let bloodTex: Texture | null = null;
+let bloodParticles: ParticleSystem | null = null;
 let particleTex: Texture | null = null;
 let muzzleParticles: ParticleSystem | null = null;
 let installed = false;
+
+/** Soft red disc with darker centre — used as the blood-pool decal. */
+function makeBloodTexture(): Texture {
+  if (bloodTex) return bloodTex;
+  const scene = getScene();
+  const size = 64;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (x - size / 2) / (size / 2);
+      const dy = (y - size / 2) / (size / 2);
+      // Irregular splatter: jitter the radius with cheap pseudo-noise so
+      // the disc doesn't read as a perfect circle.
+      const noise = (Math.sin(x * 0.9) + Math.cos(y * 1.3)) * 0.06;
+      const r = Math.hypot(dx, dy) + noise;
+      const i = (y * size + x) * 4;
+      if (r >= 1.0) {
+        data[i] = 0; data[i + 1] = 0; data[i + 2] = 0; data[i + 3] = 0;
+        continue;
+      }
+      const t = 1 - r;
+      const dark = Math.pow(t, 2.2);
+      // Centre is deep maroon; rim fades to almost-black with alpha.
+      const red = Math.round(80 + dark * 70);
+      const green = Math.round(8 + dark * 12);
+      const blue = Math.round(4 + dark * 8);
+      const alpha = Math.round(Math.min(1, t * 1.6) * 230);
+      data[i] = red;
+      data[i + 1] = green;
+      data[i + 2] = blue;
+      data[i + 3] = alpha;
+    }
+  }
+  bloodTex = RawTexture.CreateRGBATexture(
+    data, size, size, scene, false, false,
+    Engine.TEXTURE_TRILINEAR_SAMPLINGMODE, Constants.TEXTURETYPE_UNSIGNED_BYTE,
+  );
+  bloodTex.hasAlpha = true;
+  bloodTex.name = 'blood-splatter';
+  return bloodTex;
+}
 
 function makeParticleTexture(): Texture {
   if (particleTex) return particleTex;
@@ -93,6 +149,43 @@ function makeImpact(): Impact {
   mesh.isPickable = false;
   mesh.setEnabled(false);
   return { mesh, expiresMs: 0, active: false };
+}
+
+function makeBloodDecal(): BloodDecal {
+  const scene = getScene();
+  // Plane lies flat on the ground (rotated +X 90°). Two-sided so it
+  // reads correctly even if the camera dips below y=0 briefly.
+  const mesh = MeshBuilder.CreatePlane('blood', { size: 1, sideOrientation: Mesh.DOUBLESIDE }, scene);
+  const mat = new StandardMaterial('blood-mat', scene);
+  mat.diffuseTexture = makeBloodTexture();
+  mat.opacityTexture = makeBloodTexture();
+  mat.useAlphaFromDiffuseTexture = true;
+  mat.specularColor = new Color3(0, 0, 0);
+  mat.disableLighting = false;
+  mat.backFaceCulling = false;
+  mesh.material = mat;
+  mesh.isPickable = false;
+  mesh.receiveShadows = false;
+  // Lay the plane flat on the floor.
+  mesh.rotation.x = Math.PI / 2;
+  mesh.setEnabled(false);
+  return { mesh, placedAtMs: 0, active: false };
+}
+
+function getBloodDecal(): BloodDecal {
+  for (const b of bloodPool) if (!b.active) return b;
+  if (bloodPool.length < MAX_BLOOD_DECALS) {
+    const b = makeBloodDecal();
+    bloodPool.push(b);
+    return b;
+  }
+  // Pool full — reuse the oldest (FIFO). Recent splatters stay; one
+  // off-screen old pool fades out of existence.
+  let oldest = bloodPool[0]!;
+  for (const b of bloodPool) if (b.placedAtMs < oldest.placedAtMs) oldest = b;
+  oldest.active = false;
+  oldest.mesh.setEnabled(false);
+  return oldest;
 }
 
 function getTracer(): Tracer {
@@ -202,6 +295,56 @@ export function installCombatVisuals(): void {
     if (weapon === 'knife') return;
     muzzleParticles.emitter = new Vector3(ox, oy, oz);
     muzzleParticles.manualEmitCount = 6;
+  });
+
+  // Blood splatter particle system — repositioned per character hit.
+  // Shared between all hits; the particles' short lifetime keeps
+  // overlapping bursts cheap.
+  const bloodTexHandle = makeBloodTexture();
+  bloodParticles = new ParticleSystem('blood', 64, scene);
+  bloodParticles.particleTexture = bloodTexHandle;
+  bloodParticles.color1 = new Color3(0.55, 0.05, 0.05).toColor4(1);
+  bloodParticles.color2 = new Color3(0.30, 0.02, 0.02).toColor4(1);
+  bloodParticles.colorDead = new Color3(0.10, 0.0, 0.0).toColor4(0);
+  bloodParticles.minSize = 0.05;
+  bloodParticles.maxSize = 0.18;
+  bloodParticles.minLifeTime = 0.18;
+  bloodParticles.maxLifeTime = 0.40;
+  bloodParticles.emitRate = 0;
+  bloodParticles.minEmitPower = 1.5;
+  bloodParticles.maxEmitPower = 4.0;
+  bloodParticles.gravity = new Vector3(0, -8, 0);
+  bloodParticles.minAngularSpeed = 0;
+  bloodParticles.maxAngularSpeed = Math.PI * 2;
+  bloodParticles.start();
+
+  // Character hit → spurt a few blood particles at the hit point and
+  // drop a ground-pool decal at the victim's feet so the surface
+  // shows a permanent stain. The decal stays for the rest of the
+  // round (only swept when the pool fills past MAX_BLOOD_DECALS).
+  events.on('combat:hit', ({ hitX, hitY, hitZ, victimFootY, dirX, dirY, dirZ, headshot }) => {
+    if (!bloodParticles) return;
+    bloodParticles.emitter = new Vector3(hitX, hitY, hitZ);
+    // Direction-of-travel cone: blood sprays in the direction the
+    // bullet was going (away from the shooter). Headshots produce a
+    // bigger burst.
+    bloodParticles.direction1 = new Vector3(dirX - 0.6, dirY + 0.4, dirZ - 0.6);
+    bloodParticles.direction2 = new Vector3(dirX + 0.6, dirY + 0.9, dirZ + 0.6);
+    bloodParticles.manualEmitCount = headshot ? 30 : 16;
+
+    // Drop a flat decal on the floor under the victim. The decal Y
+    // sits a hair above the footYO so it doesn't z-fight with the
+    // floor mesh. Random rotation + size keep repeated splatters from
+    // looking identical.
+    const d = getBloodDecal();
+    d.active = true;
+    d.placedAtMs = performance.now();
+    const sizeM = 0.35 + Math.random() * 0.35 + (headshot ? 0.25 : 0);
+    d.mesh.scaling.set(sizeM, sizeM, sizeM);
+    d.mesh.position.set(hitX, victimFootY + 0.012, hitZ);
+    d.mesh.rotation.x = Math.PI / 2;
+    d.mesh.rotation.y = Math.random() * Math.PI * 2;
+    d.mesh.setEnabled(true);
   });
 
   // Despawn pooled visuals after expiry.

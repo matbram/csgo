@@ -322,10 +322,19 @@ export class GrenadeSystem {
           headshot: false, tMs: nowMs,
         });
       } else {
+        // Grenade damage has no aimed direction — pick a synthetic one
+        // pointing radially outward from the explosion so the blood
+        // visual sprays away from the blast.
+        const inv = dist > 1e-3 ? 1 / dist : 0;
         events.emit('combat:hit', {
           attackerId: g.throwerId, victimId: c.id, weapon: 'he',
           hitbox: 'chest', damage: hpDelta, headshot: false, killing: false,
-          hitX: tx, hitY: ty, hitZ: tz, distance: dist, tMs: nowMs,
+          hitX: tx, hitY: ty, hitZ: tz,
+          victimFootY: c.pos.y,
+          dirX: (tx - g.pos.x) * inv,
+          dirY: (ty - g.pos.y) * inv,
+          dirZ: (tz - g.pos.z) * inv,
+          distance: dist, tMs: nowMs,
         });
       }
     }

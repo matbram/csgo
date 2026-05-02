@@ -181,6 +181,8 @@ export class CombatSystem {
         headshot: bestKind === 'head',
         killing,
         hitX: bestPoint.x, hitY: bestPoint.y, hitZ: bestPoint.z,
+        victimFootY: bestVictim.pos.y,
+        dirX: finalDir.x, dirY: finalDir.y, dirZ: finalDir.z,
         distance: closestT,
         tMs: time.simMs,
       });
