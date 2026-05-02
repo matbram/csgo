@@ -11,6 +11,7 @@
 import type { Bot } from '../entities/bot';
 import type { KnownEnemy } from './perception';
 import type { Role, Side, StrategyId } from './plans';
+import { makeCommsState, type CommsState } from './comms/callouts';
 
 export interface TeamObjective {
   /** World-space target (callout centroid by default). */
@@ -62,6 +63,9 @@ export interface TeamBlackboard {
   strategyInstalledAtMs: number;
   /** Recent team-level events. Newest first; capped at MAX_EVENTS. */
   events: TeamEvent[];
+  /** Synthesised player-style callouts. Emitters add via `tryEmit`;
+   *  receivers filter by their own commsLatencyMs. */
+  comms: CommsState;
 }
 
 export function makeBlackboard(side: Side): TeamBlackboard {
@@ -74,6 +78,7 @@ export function makeBlackboard(side: Side): TeamBlackboard {
     bomb: { phase: 'carried', carrierId: null, site: null, pos: null },
     strategyInstalledAtMs: 0,
     events: [],
+    comms: makeCommsState(),
   };
 }
 

@@ -58,6 +58,9 @@ import { makeBlackboard, aggregateKnown, refreshTeamRoster, aliveCount } from '.
 import { planRoundStart, reactToBombPlanted } from './ai/strategist';
 import { setMatchSeed } from './ai/rng';
 import { buildWorldStateView, type WorldStateView } from './ai/world/state';
+import { installCommsTriggers, tickComms, setCommsSimNow, applyCommsIntel } from './ai/comms/triggers';
+import { resetComms } from './ai/comms/callouts';
+import { CalloutFeedHud } from './hud/calloutFeed';
 import type { Character } from './entities/character';
 import { pointInPolygon2D } from './map/world';
 import { makeMatch, beginRound, endRound, applyHalftime, stepMatch, type MatchState } from './match/match';
@@ -186,6 +189,14 @@ function bootstrap(): void {
   const tBoard = makeBlackboard('T');
   const ctBoard = makeBlackboard('CT');
 
+  // Comms triggers — wired once. Listens to combat/match/grenade events
+  // on the typed bus and synthesises player-style callouts onto the
+  // per-team blackboards. The lookup map is rebuilt on roster changes
+  // (only at boot today; per-round respawn keeps the same ids).
+  const botById = new Map<string, Bot>();
+  for (const b of bots) botById.set(b.id, b);
+  installCommsTriggers({ botById, tBoard, ctBoard, world });
+
   // Compute spawn centroids once — used by the bot Save state to pick
   // a retreat target. Spawn polygons aren't authored separately, so we
   // average the spawn points for each team.
@@ -215,6 +226,7 @@ function bootstrap(): void {
   const combatHud = new CombatHud();
   const scopeHud = new ScopeHud();
   const aiDebugHud = new AiDebugHud();
+  const calloutFeedHud = new CalloutFeedHud();
   const flashOverlay = new FlashOverlay();
   const spectatorHud = new SpectatorHud();
   const matchEndHud = new MatchEndHud();
@@ -799,6 +811,10 @@ function bootstrap(): void {
     const curPhase = match.round?.phase ?? null;
     if (curPhase === 'live' && lastSeenPhase !== 'live') {
       liveStartedAtMs = time.simMs;
+      // New round entered live phase — clear the per-team comms log so
+      // the HUD doesn't carry over chatter from the previous round.
+      resetComms(tBoard.comms);
+      resetComms(ctBoard.comms);
       debugLog.round('phase.freeze→live', {
         round: match.round?.number,
         simMs: time.simMs,
@@ -813,6 +829,10 @@ function bootstrap(): void {
       });
     }
     lastSeenPhase = curPhase;
+    // Pin the comms layer's "now" before any bus listener fires this
+    // frame — combat/grenade emissions in stepRound resolve through the
+    // event bus, and tryEmit needs a stable simMs to gate cooldowns.
+    setCommsSimNow(time.simMs);
 
     if (match.round?.phase === 'live') {
       // Blackboard refresh once per tick: aggregate per-bot KnownEnemies
@@ -830,6 +850,15 @@ function bootstrap(): void {
       const localCT = localPlayer.character.team === 'CT' && localPlayer.character.alive ? 1 : 0;
       const tAlive = aliveCount(tBoard, bots) + localT;
       const ctAlive = aliveCount(ctBoard, bots) + localCT;
+
+      // Per-tick comms: edge triggers (visible-enemy spotted, flashed)
+      // that the event bus doesn't surface as discrete events.
+      tickComms(bots, time.simMs);
+      // Push delivered teammate callouts into receiver perception as
+      // 'sound'-confidence intel — a bot that hears a teammate call
+      // "spotted A long" turns to face the angle, but won't fire
+      // blind into it (LOS still required for visible).
+      applyCommsIntel(bots, time.simMs);
 
       // Build the AI world view once per tick. Phase 0: only the debug
       // HUD reads it; brain decisions still flow through the legacy
@@ -1148,6 +1177,10 @@ function bootstrap(): void {
 
     debugHud.update(renderDtMs);
     aiDebugHud.update(bots, tBoard, ctBoard, worldView);
+    // Local team's comms feed. Local player is always on T at boot
+    // (and may swap at halftime); we follow `localPlayer.character.team`.
+    const localTeamBoard = localPlayer.character.team === 'T' ? tBoard : ctBoard;
+    calloutFeedHud.update(time.simMs, localTeamBoard, bots);
     combatHud.update(localPlayer.character, performance.now());
     flashOverlay.update(localPlayer.character, time.simMs);
     matchEndHud.update(match);

@@ -41,6 +41,7 @@ function fakeBot(id: string, team: 'T' | 'CT', alive = true): Bot {
     perception,
     brain,
     aiDisabled: false,
+    commsLatencyMs: 0,
   };
 }
 

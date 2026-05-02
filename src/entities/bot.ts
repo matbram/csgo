@@ -56,6 +56,10 @@ export interface Bot {
    *  death — otherwise the brain would overwrite the player's mouse aim
    *  and movement input every frame. */
   aiDisabled: boolean;
+  /** Mirror of difficulty.commsLatencyMs — how long after a teammate
+   *  emits a callout this bot can act on it. The comms layer reads from
+   *  here directly so it doesn't have to reach into Brain internals. */
+  commsLatencyMs: number;
 }
 
 let nextBotId = 1;
@@ -122,6 +126,7 @@ export function createBot(
     perception,
     brain,
     aiDisabled: false,
+    commsLatencyMs: difficulty.commsLatencyMs,
   };
 }
 

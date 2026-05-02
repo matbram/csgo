@@ -32,6 +32,11 @@ export interface BotDifficulty {
   fireAimToleranceDeg: number;
   /** Mag fraction below which the bot wants to reload when out of combat. */
   reloadAtMagFraction: number;
+  /** Delay (ms) between a teammate emitting a callout and this bot
+   *  receiving it. Lower difficulty = sloppier "comms" between bots, so
+   *  by the time intel arrives the situation may have moved on. Phase 4
+   *  scales this further by personality.teamwork. */
+  commsLatencyMs: number;
 }
 
 const TABLE: Record<DifficultyId, BotDifficulty> = {
@@ -45,6 +50,7 @@ const TABLE: Record<DifficultyId, BotDifficulty> = {
     visionRangeM: 32,
     fireAimToleranceDeg: 6.0,
     reloadAtMagFraction: 0.30,
+    commsLatencyMs: 1500,
   },
   medium: {
     reactionMs: 350,
@@ -56,6 +62,7 @@ const TABLE: Record<DifficultyId, BotDifficulty> = {
     visionRangeM: 42,
     fireAimToleranceDeg: 4.0,
     reloadAtMagFraction: 0.30,
+    commsLatencyMs: 800,
   },
   hard: {
     reactionMs: 200,
@@ -67,6 +74,7 @@ const TABLE: Record<DifficultyId, BotDifficulty> = {
     visionRangeM: 50,
     fireAimToleranceDeg: 2.5,
     reloadAtMagFraction: 0.25,
+    commsLatencyMs: 400,
   },
   expert: {
     reactionMs: 110,
@@ -78,6 +86,7 @@ const TABLE: Record<DifficultyId, BotDifficulty> = {
     visionRangeM: 60,
     fireAimToleranceDeg: 1.5,
     reloadAtMagFraction: 0.20,
+    commsLatencyMs: 200,
   },
 };
 
