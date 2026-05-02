@@ -58,6 +58,8 @@ import { makeBlackboard, aggregateKnown, refreshTeamRoster, aliveCount } from '.
 import { planRoundStart, reactToBombPlanted } from './ai/strategist';
 import { setMatchSeed } from './ai/rng';
 import { buildWorldStateView, type WorldStateView } from './ai/world/state';
+import { buildTacticalGraph, type TacticalGraph } from './ai/world/tacticalGraph';
+import { dust2Overlay } from './ai/world/tacticalOverlay.dust2';
 import { installCommsTriggers, tickComms, setCommsSimNow, applyCommsIntel } from './ai/comms/triggers';
 import { resetComms } from './ai/comms/callouts';
 import { CalloutFeedHud } from './hud/calloutFeed';
@@ -145,6 +147,11 @@ function bootstrap(): void {
   // and the grid is small enough to bake synchronously (<200 ms).
   const navGrid = NavGrid.build(world, query);
   const pathService = new PathService(navGrid, { maxRequestsPerFrame: 2, cacheSize: 32 });
+  // Tactical graph — cover/peek/hold/pre-aim derived from the nav grid +
+  // world geometry, with a per-map hand-tune overlay. Phase 1: built
+  // once at boot, only the F4 overlay reads it. Phase 3 cuts the GOAP
+  // planner over to it for cost overlays + action targeting.
+  const tacticalGraph: TacticalGraph = buildTacticalGraph(world, navGrid, query, dust2Overlay);
 
   // 7) Roster: 4 T bots (teammates of local), 5 CT bots (enemies).
   // Seed the AI RNG before bots are constructed so each Brain forks a
@@ -1176,7 +1183,7 @@ function bootstrap(): void {
     );
 
     debugHud.update(renderDtMs);
-    aiDebugHud.update(bots, tBoard, ctBoard, worldView);
+    aiDebugHud.update(bots, tBoard, ctBoard, worldView, tacticalGraph);
     // Local team's comms feed. Local player is always on T at boot
     // (and may swap at halftime); we follow `localPlayer.character.team`.
     const localTeamBoard = localPlayer.character.team === 'T' ? tBoard : ctBoard;

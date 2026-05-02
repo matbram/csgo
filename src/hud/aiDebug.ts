@@ -14,10 +14,14 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { LinesMesh } from '@babylonjs/core/Meshes/linesMesh';
 import { CreateLines } from '@babylonjs/core/Meshes/Builders/linesBuilder';
+import type { Mesh } from '@babylonjs/core/Meshes/mesh';
+import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { getScene } from '../engine/scene';
 import type { Bot } from '../entities/bot';
 import type { TeamBlackboard } from '../ai/blackboard';
 import type { WorldStateView } from '../ai/world/state';
+import type { TacticalGraph } from '../ai/world/tacticalGraph';
 
 interface PathLine {
   mesh: LinesMesh;
@@ -26,6 +30,10 @@ interface PathLine {
 
 const T_COLOR = new Color3(0.85, 0.55, 0.20);
 const CT_COLOR = new Color3(0.30, 0.55, 0.95);
+const COVER_COLOR = new Color3(0.20, 0.85, 0.95);
+const COVER_HEAD_GLITCH_COLOR = new Color3(0.95, 0.65, 0.30);
+const PEEK_COLOR = new Color3(0.85, 0.95, 0.40);
+const HOLD_COLOR = new Color3(0.95, 0.30, 0.55);
 /** Maximum waypoints we'll ever draw per path. Babylon's `instance`
  *  update path requires a constant point count, so we always feed exactly
  *  this many — extras collapse to the path's last point so they don't
@@ -37,6 +45,13 @@ export class AiDebugHud {
   private readonly panel: HTMLDivElement;
   private readonly pathLines = new Map<string, PathLine>();
   private enabled = false;
+  /** One-shot built-and-cached tactical visuals — created the first
+   *  time we render with a graph; toggled on/off when the F4 overlay
+   *  flips. Rebuilds are not supported (the graph is per-map, baked at
+   *  boot — no runtime re-derivation). */
+  private tacticalMeshes: Mesh[] = [];
+  private tacticalLines: LinesMesh[] = [];
+  private tacticalBuiltForGraph: TacticalGraph | null = null;
 
   constructor() {
     const host = document.getElementById('hud-root');
@@ -51,8 +66,13 @@ export class AiDebugHud {
     this.enabled = !this.enabled;
     this.panel.classList.toggle('hidden', !this.enabled);
     if (!this.enabled) {
-      // Hide path meshes when disabled so they don't render.
+      // Hide path + tactical meshes when disabled so they don't render.
       for (const pl of this.pathLines.values()) pl.mesh.setEnabled(false);
+      for (const m of this.tacticalMeshes) m.setEnabled(false);
+      for (const l of this.tacticalLines) l.setEnabled(false);
+    } else {
+      for (const m of this.tacticalMeshes) m.setEnabled(true);
+      for (const l of this.tacticalLines) l.setEnabled(true);
     }
   }
 
@@ -70,10 +90,92 @@ export class AiDebugHud {
     tBoard?: TeamBlackboard,
     ctBoard?: TeamBlackboard,
     view?: WorldStateView | null,
+    tactical?: TacticalGraph | null,
   ): void {
     if (!this.enabled) return;
     this.refreshPanel(bots, tBoard, ctBoard, view ?? null);
     this.refreshPaths(bots);
+    if (tactical && this.tacticalBuiltForGraph !== tactical) {
+      this.buildTacticalVisuals(tactical);
+      this.tacticalBuiltForGraph = tactical;
+    }
+  }
+
+  /** Build the tactical-graph visualisation once. Cover nodes are
+   *  small spheres at the cover position; head-glitches use a hotter
+   *  colour so they stand out. Hold angles are short lines from the
+   *  cover toward the angle's facing yaw. Peek nodes are dashed lines
+   *  from cover to peek cell. Pre-aim spots are not rendered (too
+   *  many pairs, low signal — read the graph in code if you need them). */
+  private buildTacticalVisuals(graph: TacticalGraph): void {
+    const scene = getScene();
+    // Dispose any previous run (e.g. HMR re-init).
+    for (const m of this.tacticalMeshes) m.dispose();
+    for (const l of this.tacticalLines) l.dispose();
+    this.tacticalMeshes = [];
+    this.tacticalLines = [];
+
+    const coverMat = new StandardMaterial('tactical-cover-mat', scene);
+    coverMat.emissiveColor = COVER_COLOR;
+    coverMat.disableLighting = true;
+    const headMat = new StandardMaterial('tactical-cover-head-mat', scene);
+    headMat.emissiveColor = COVER_HEAD_GLITCH_COLOR;
+    headMat.disableLighting = true;
+
+    // Cover nodes: small spheres just above the floor.
+    for (const c of graph.cover) {
+      const m = MeshBuilder.CreateSphere(`tactical-cover-${c.id}`,
+        { diameter: 0.18, segments: 4 }, scene);
+      m.position.set(c.x, c.y + 0.10, c.z);
+      m.material = c.headGlitch ? headMat : coverMat;
+      m.isPickable = false;
+      this.tacticalMeshes.push(m);
+      // Normal indicator: a 0.5m line from the cover into the threat
+      // direction so we can eyeball "is the bot facing the right way".
+      const lineEnd = new Vector3(
+        c.x + c.normalX * 0.5,
+        c.y + 0.10,
+        c.z + c.normalZ * 0.5,
+      );
+      const line = CreateLines(`tactical-cover-norm-${c.id}`, {
+        points: [new Vector3(c.x, c.y + 0.10, c.z), lineEnd],
+      }, scene);
+      line.color = c.headGlitch ? COVER_HEAD_GLITCH_COLOR : COVER_COLOR;
+      line.isPickable = false;
+      this.tacticalLines.push(line);
+    }
+
+    // Peek nodes: line from cover to peek cell.
+    for (const p of graph.peeks) {
+      const cover = graph.cover.find(c => c.id === p.coverId);
+      if (!cover) continue;
+      const line = CreateLines(`tactical-peek-${p.id}`, {
+        points: [
+          new Vector3(cover.x, cover.y + 0.05, cover.z),
+          new Vector3(p.peekX, p.peekY + 0.05, p.peekZ),
+        ],
+      }, scene);
+      line.color = PEEK_COLOR;
+      line.isPickable = false;
+      this.tacticalLines.push(line);
+    }
+
+    // Hold angles: 1 m line in the facing direction.
+    for (const h of graph.holdAngles) {
+      const cover = graph.cover.find(c => c.id === h.coverId);
+      if (!cover) continue;
+      const fwdX = Math.sin(h.yaw);
+      const fwdZ = Math.cos(h.yaw);
+      const line = CreateLines(`tactical-hold-${cover.id}-${h.exposes ?? 'free'}`, {
+        points: [
+          new Vector3(cover.x, cover.y + 1.4, cover.z),
+          new Vector3(cover.x + fwdX * 1.0, cover.y + 1.4, cover.z + fwdZ * 1.0),
+        ],
+      }, scene);
+      line.color = HOLD_COLOR;
+      line.isPickable = false;
+      this.tacticalLines.push(line);
+    }
   }
 
   private refreshPanel(
@@ -183,6 +285,11 @@ export class AiDebugHud {
   dispose(): void {
     for (const pl of this.pathLines.values()) pl.mesh.dispose();
     this.pathLines.clear();
+    for (const m of this.tacticalMeshes) m.dispose();
+    for (const l of this.tacticalLines) l.dispose();
+    this.tacticalMeshes = [];
+    this.tacticalLines = [];
+    this.tacticalBuiltForGraph = null;
     this.panel.remove();
   }
 }
