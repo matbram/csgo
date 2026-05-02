@@ -50,6 +50,7 @@ function fakeBot(id: string, team: 'T' | 'CT', alive = true): Bot {
         utilityIQ: 0.5, riskAversion: 0.5, adaptability: 0.5,
       },
     },
+    usePlanner: false,
   };
 }
 

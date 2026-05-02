@@ -65,6 +65,12 @@ export interface Bot {
    *  scalars). Loaded from localStorage on first construction; stable
    *  across rounds and (subject to localStorage) across sessions. */
   identity: BotIdentity;
+  /** When true, the brain decides its next action via the GOAP planner
+   *  (`src/ai/goap/planner.ts`) instead of the legacy utility selector.
+   *  Phase 3 v1 turns this on for `expert` difficulty only; the
+   *  planner falls through to legacy execution for the actual tick
+   *  work, so this is safe to flip per bot at runtime. */
+  usePlanner: boolean;
 }
 
 let nextBotId = 1;
@@ -138,6 +144,10 @@ export function createBot(
     // baseline.
     commsLatencyMs: difficulty.commsLatencyMs * (1.4 - 0.8 * identity.personality.teamwork),
     identity,
+    // Expert bots get the planner by default. Lower difficulties stay
+    // on the legacy utility selector for now — the planner is opt-in
+    // per bot so we can roll it out safely.
+    usePlanner: (opts?.difficulty ?? 'medium') === 'expert',
   };
 }
 

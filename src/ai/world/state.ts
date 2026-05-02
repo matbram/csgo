@@ -124,6 +124,18 @@ export function buildWorldStateView(input: BuildViewInputs): WorldStateView {
     for (const e of bot.perception.known.values()) {
       if (e.confidence === 'visible') { visible = true; break; }
     }
+    // Planner-aware fields: when the bot is on the planner, surface
+    // the head action and queue tail; otherwise leave defaults so the
+    // HUD shows `-` placeholders.
+    const planned = bot.brain.plannedActions;
+    const idx = bot.brain.plannedActionIdx;
+    const currentAction = planned && idx < planned.length ? planned[idx]!.label : null;
+    const upcoming: string[] = planned
+      ? planned.slice(idx + 1, idx + 4).map(a => a.label)
+      : [];
+    const goalStack: string[] = bot.brain.currentGoal
+      ? [bot.brain.currentGoal.kind]
+      : [];
     botMap.set(bot.id, {
       id: bot.id,
       team: c.team,
@@ -140,9 +152,9 @@ export function buildWorldStateView(input: BuildViewInputs): WorldStateView {
       brainState: bot.brain.state,
       knownEnemyCount: bot.perception.known.size,
       hasVisibleEnemy: visible,
-      goalStack: EMPTY,
-      currentAction: null,
-      plannedActions: EMPTY,
+      goalStack,
+      currentAction,
+      plannedActions: upcoming,
       threatLevel: 0,
     });
   }
