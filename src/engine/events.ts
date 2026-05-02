@@ -61,6 +61,16 @@ export interface EventMap {
   };
   'combat:reload': { shooterId: string; weapon: string; tMs: number };
   'combat:weaponSwitch': { shooterId: string; weapon: string; tMs: number };
+  /** A character took a running step. Walking (Shift) and crouching are
+   *  silent — those characters never emit this event. Audio plays the
+   *  surface-specific clip; perception lets bots hear an enemy through
+   *  walls. `surface` matches the box collider's surface tag. */
+  'character:footstep': {
+    id: string;
+    x: number; y: number; z: number;
+    surface: 'sand' | 'wood' | 'metal' | 'concrete' | 'stone';
+    tMs: number;
+  };
   'grenade:thrown': {
     grenadeId: number;
     kind: 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';

@@ -288,6 +288,25 @@ function bootstrap(): void {
     }
   });
 
+  // Footstep perception: enemy bots hear running steps within a
+  // shorter range than gunfire. Footsteps degrade to 'sound'
+  // confidence in perception — the bot turns to face the noise but
+  // won't blind-fire through walls. Same-team steps are ignored so a
+  // friendly running past doesn't drag attention onto a teammate.
+  const FOOTSTEP_HEARING_M = 22;
+  events.on('character:footstep', ({ id, x, y, z, tMs }) => {
+    const stepper = characters.find(c => c.id === id);
+    if (!stepper) return;
+    for (const bot of bots) {
+      if (!bot.character.alive) continue;
+      if (bot.character.team === stepper.team) continue;
+      const dx = bot.character.pos.x - x;
+      const dz = bot.character.pos.z - z;
+      if (dx * dx + dz * dz > FOOTSTEP_HEARING_M * FOOTSTEP_HEARING_M) continue;
+      bot.perception.reportSound(id, x, y, z, tMs);
+    }
+  });
+
   // 9) Input
   canvas.addEventListener('click', () => ensureAudioContext());
   input.attach(canvas);
@@ -479,6 +498,39 @@ function bootstrap(): void {
     if (locked) startFirstRound();
   });
 
+  // Footstep emission. We track a per-character distance accumulator
+  // and emit one event each time it exceeds STRIDE_M, but only while
+  // the character is running on solid ground (Shift-walk and crouch
+  // are intentionally silent so players can flank). Crouch-only
+  // characters never reach the speed threshold either; the explicit
+  // walking flag covers the player. Bots never set `walking`, so they
+  // make footsteps whenever they're on the move.
+  const STRIDE_M = 1.6;
+  const RUN_SPEED_THRESHOLD = 2.5;     // m/s — above walk pace
+  const stepAccum = new Map<string, number>();
+  const tickFootstep = (
+    id: string,
+    state: { onGround: boolean; crouching: boolean; forcedCrouch?: boolean; walking: boolean; speed: number; groundSurface: 'sand' | 'wood' | 'metal' | 'concrete' | 'stone' },
+    dtMs: number,
+    pos: { x: number; y: number; z: number },
+  ): void => {
+    if (!state.onGround || state.crouching || state.walking || state.speed < RUN_SPEED_THRESHOLD) {
+      stepAccum.set(id, 0);
+      return;
+    }
+    let acc = stepAccum.get(id) ?? 0;
+    acc += state.speed * (dtMs / 1000);
+    if (acc >= STRIDE_M) {
+      acc -= STRIDE_M;
+      events.emit('character:footstep', {
+        id, x: pos.x, y: pos.y, z: pos.z,
+        surface: state.groundSurface,
+        tMs: time.simMs,
+      });
+    }
+    stepAccum.set(id, acc);
+  };
+
   // ---- Sim systems ----
   loop.registerSim((dtMs) => {
     const nowMs = time.simMs + dtMs; // step time updates AFTER sim systems run, so use computed
@@ -524,6 +576,7 @@ function bootstrap(): void {
       speedScale,
     });
     localPlayer.syncFromController();
+    tickFootstep('local', ctrl.state, dtMs, localPlayer.character.pos);
 
     // Buy menu toggling — only if buy phase + in buy zone.
     const slot = match.players.get('local');
@@ -794,6 +847,7 @@ function bootstrap(): void {
           // While engaging the brain owns yaw; let it through unmodified.
           faceMovement: decision.followPath,
         });
+        tickFootstep(bot.id, bot.controller.state, dtMs, bot.character.pos);
         // Per-bot trace, gated on the 'bots' channel. We log only on
         // transitions: a brain state change, OR the moment a bot
         // crosses into / out of "stuck" (followPath but ~0 speed for

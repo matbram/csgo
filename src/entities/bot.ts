@@ -139,10 +139,23 @@ export function snapBotToCharacterPose(bot: Bot): void {
   bot.pathIdx = 0;
   bot.objective = null;
   bot.nextPlanAfterMs = 0;
-  bot.parts.body.setEnabled(true);
-  bot.parts.head.setEnabled(true);
-  bot.parts.legs.setEnabled(true);
-  for (const g of bot.parts.gear) g.setEnabled(true);
+  // Re-enable every detachable part — any limb torn off last round
+  // gets put back so the respawned bot isn't missing pieces.
+  const p = bot.parts;
+  p.head.setEnabled(true);
+  p.torso.setEnabled(true);
+  p.pelvis.setEnabled(true);
+  p.leftUpperArm.setEnabled(true);
+  p.leftForearm.setEnabled(true);
+  p.rightUpperArm.setEnabled(true);
+  p.rightForearm.setEnabled(true);
+  p.leftThigh.setEnabled(true);
+  p.leftShin.setEnabled(true);
+  p.leftFoot.setEnabled(true);
+  p.rightThigh.setEnabled(true);
+  p.rightShin.setEnabled(true);
+  p.rightFoot.setEnabled(true);
+  for (const g of p.gear) g.setEnabled(true);
 }
 
 /** Set a new objective and clear any in-flight path. The next sim tick

@@ -81,6 +81,48 @@ function generateAllSounds(): void {
   if (smokeHiss) buffers.set('grenade_smoke', smokeHiss);
   const fireWhoosh = synthesizeFireWhoosh();
   if (fireWhoosh) buffers.set('grenade_molotov', fireWhoosh);
+
+  // Footstep variants — four per surface so consecutive steps don't
+  // sound identical. Each one is a short scuff/thud rendered at boot.
+  // Walking and crouching are intentionally not given a sound (the
+  // emitter in main.ts doesn't fire those), so the synth set only
+  // covers running steps.
+  for (let i = 0; i < 4; i++) {
+    const s = synthesizeFootstep('sand', i);
+    if (s) buffers.set(`footstep_sand_${i}`, s);
+    const c = synthesizeFootstep('concrete', i);
+    if (c) buffers.set(`footstep_concrete_${i}`, c);
+  }
+}
+
+/** A short, punchy run-step. Sand reads as a low rumble + a noisy
+ *  scuff; concrete adds a sharper tonal click for the heel strike. */
+function synthesizeFootstep(surface: 'sand' | 'concrete', variant: number): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.18);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  // Slight per-variant tuning so the four steps feel like a stride.
+  const seed = (variant + 1) * 2.7;
+  const baseFreq = surface === 'concrete' ? 80 + variant * 6 : 55 + variant * 4;
+  const noiseCutoff = surface === 'concrete' ? 2400 : 1600;
+  let lp = 0;
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    // Two-stage envelope: sharp impact, slower scrape decay.
+    const impact = Math.exp(-t * 60);
+    const scrape = Math.exp(-t * 9) - Math.exp(-t * 60);
+    // Filtered noise — the body of the step.
+    const noise = Math.random() * 2 - 1;
+    const a = 1 - Math.exp(-2 * Math.PI * noiseCutoff / sr);
+    lp += a * (noise - lp);
+    const noiseBody = lp * (impact * 0.7 + Math.max(0, scrape) * 0.4);
+    // Tonal heel hit — short low sine for sand, slightly brighter for concrete.
+    const tone = Math.sin(2 * Math.PI * baseFreq * (1 + seed * 0.01) * t) * impact * 0.3;
+    data[i] = clip((noiseBody + tone) * 0.55);
+  }
+  return buf;
 }
 
 function synthesizeGunshot(id: WeaponId): AudioBuffer | null {
@@ -440,6 +482,29 @@ export function installAudio(): void {
       playSound(id, { volume: 0.9 });
     } else {
       playSoundAt(id, ox, oy, oz, { volume: 1.0, maxDistance: 250 });
+    }
+  });
+
+  // Footsteps. Local player gets non-positional playback (their own
+  // steps shouldn't pan in 3D — jarring); everyone else's footsteps
+  // are 3D so the player can locate enemies behind walls. Variant
+  // index cycles per character so consecutive steps feel like a
+  // stride rather than four identical thuds.
+  const stepVariant = new Map<string, number>();
+  events.on('character:footstep', ({ id, x, y, z, surface }) => {
+    const family = surface === 'concrete' || surface === 'stone' || surface === 'metal'
+      ? 'concrete'
+      : 'sand';
+    const next = ((stepVariant.get(id) ?? -1) + 1) & 3;
+    stepVariant.set(id, next);
+    const soundId = `footstep_${family}_${next}`;
+    if (id === 'local') {
+      playSound(soundId, { volume: 0.55 });
+    } else {
+      // Range tuned so a sprint at 6.5 m/s is audible at ~30 m
+      // (you'll hear them before they round the corner) and inaudible
+      // past 40 m. Lower volume than gunshots so they don't dominate.
+      playSoundAt(soundId, x, y, z, { volume: 0.85, maxDistance: 40 });
     }
   });
 

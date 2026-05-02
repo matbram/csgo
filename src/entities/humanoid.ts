@@ -1,11 +1,9 @@
-/** Procedural humanoid mesh — torso + head + legs + helmet/vest/arms.
- *  Used by all characters. The mesh is parented to a single TransformNode
- *  per character, so we move the node and the parts come along.
- *
- *  Materials are reused across characters of the same team. Only one
- *  TransformNode is moved per character per render frame; the gear
- *  meshes are static children and don't add to the per-frame matrix
- *  cost beyond Babylon's parent walk. */
+/** Procedural humanoid mesh — head, torso, pelvis, two arm groups,
+ *  two leg groups, plus gear (helmet, vest, boots). Each limb is its
+ *  own mesh so the gore visuals can detach a specific part on a
+ *  killing hit. The combat layer asks for a clone of the matching
+ *  part, hides the original on the corpse, and lets the clone fly
+ *  off as a gib. */
 
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
@@ -71,14 +69,38 @@ function getBootMaterial(): StandardMaterial {
     m.specularColor = new Color3(0.02, 0.02, 0.02);
   });
 }
+function getPantsMaterial(team: 'T' | 'CT'): StandardMaterial {
+  const key = `pants-${team}`;
+  return sharedMat(key, (m) => {
+    if (team === 'T') {
+      m.diffuseColor = new Color3(0.32, 0.22, 0.12);
+    } else {
+      m.diffuseColor = new Color3(0.12, 0.16, 0.24);
+    }
+    m.specularColor = new Color3(0.04, 0.04, 0.04);
+  });
+}
 
 export interface HumanoidParts {
   root: TransformNode;
-  body: Mesh;
+  /** Direct mesh references — every one of these can be hidden by
+   *  detachBodyPart() and cloned out as a flying gib. */
   head: Mesh;
-  legs: Mesh;
-  /** Static gear children — kept on the parts list so disposeHumanoid
-   *  cleans them up. Not addressed individually after build. */
+  torso: Mesh;
+  pelvis: Mesh;
+  leftUpperArm: Mesh;
+  leftForearm: Mesh;
+  rightUpperArm: Mesh;
+  rightForearm: Mesh;
+  leftThigh: Mesh;
+  leftShin: Mesh;
+  leftFoot: Mesh;
+  rightThigh: Mesh;
+  rightShin: Mesh;
+  rightFoot: Mesh;
+  /** Static helmet / vest / belt / pouches. The detach logic uses
+   *  name patterns to pull pieces (e.g. helmet shell) along with the
+   *  body part they're sitting on. */
   gear: Mesh[];
 }
 
@@ -91,151 +113,226 @@ export function createHumanoid(team: 'T' | 'CT', name: string): HumanoidParts {
   const vest = getVestMaterial();
   const helmet = getHelmetMaterial();
   const boot = getBootMaterial();
+  const pants = getPantsMaterial(team);
 
-  // Torso — box. Positioned so its center is at base + 1.05 (between stomach top and chest top).
-  const body = MeshBuilder.CreateBox(`hum-${name}-body`, { width: 0.55, height: 0.95, depth: 0.32 }, scene);
-  body.position = new Vector3(0, 1.05, 0);
-  body.material = teamMat;
-  body.parent = root;
-  body.receiveShadows = true;
-  addShadowCaster(body);
+  // ------------------------------------------------------------------
+  // Layout (in metres, root at the character's feet at ground level):
+  //
+  //   Head sphere     — center y = 1.71  (top ~1.82)
+  //   Torso box       — center y = 1.32  height 0.50
+  //   Pelvis box      — center y = 0.99  height 0.18
+  //   Thigh box       — center y = 0.69  height 0.40
+  //   Shin box        — center y = 0.27  height 0.42
+  //   Foot box        — center y = 0.04  height 0.08
+  //   Upper arm box   — center y = 1.27  height 0.36, x=±0.31
+  //   Forearm box     — center y = 0.85  height 0.42, x=±0.31
+  // ------------------------------------------------------------------
 
-  // Head — sphere at base + eye + 0.10 (matches hitbox).
-  const head = MeshBuilder.CreateSphere(`hum-${name}-head`, { diameter: 0.26, segments: 12 }, scene);
-  head.position = new Vector3(0, 1.75, 0);
+  const part = (
+    n: string,
+    width: number, height: number, depth: number,
+    x: number, y: number, z: number,
+    mat: StandardMaterial,
+    parent: TransformNode,
+  ): Mesh => {
+    const mesh = MeshBuilder.CreateBox(`hum-${name}-${n}`, { width, height, depth }, scene);
+    mesh.position.set(x, y, z);
+    mesh.material = mat;
+    mesh.parent = parent;
+    mesh.receiveShadows = true;
+    addShadowCaster(mesh);
+    return mesh;
+  };
+
+  // Head
+  const head = MeshBuilder.CreateSphere(`hum-${name}-head`, { diameter: 0.24, segments: 12 }, scene);
+  head.position.set(0, 1.71, 0);
   head.material = skin;
   head.parent = root;
   head.receiveShadows = true;
   addShadowCaster(head);
 
-  // Legs — single tapered box (cheaper than two cylinders) covering thighs+shins.
-  const legs = MeshBuilder.CreateBox(`hum-${name}-legs`, { width: 0.42, height: 0.95, depth: 0.32 }, scene);
-  legs.position = new Vector3(0, 0.5, 0);
-  legs.material = teamMat;
-  legs.parent = root;
-  legs.receiveShadows = true;
-  addShadowCaster(legs);
+  const torso = part('torso',  0.46, 0.50, 0.28,  0,    1.32, 0, teamMat, root);
+  const pelvis = part('pelvis', 0.42, 0.18, 0.28,  0,    0.99, 0, teamMat, root);
 
-  // ----- Gear: helmet, vest, pouches, shoulders, boots ----------------
-  // Each piece is a small box parented to the body part it should
-  // track (head for helmet, body for vest/shoulders/belt/pouches, root
-  // for boots). Crouch shrinks legs and lowers body+head; gear comes
-  // along automatically through its parent.
+  // Arms
+  const luArm = part('larm-up',  0.12, 0.36, 0.12, -0.31, 1.27, 0, teamMat, root);
+  const lfArm = part('larm-fwd', 0.11, 0.42, 0.11, -0.31, 0.85, 0, skin,    root);
+  const ruArm = part('rarm-up',  0.12, 0.36, 0.12,  0.31, 1.27, 0, teamMat, root);
+  const rfArm = part('rarm-fwd', 0.11, 0.42, 0.11,  0.31, 0.85, 0, skin,    root);
+
+  // Legs
+  const lThigh = part('lleg-thigh', 0.18, 0.40, 0.22, -0.11, 0.69, 0, pants, root);
+  const lShin  = part('lleg-shin',  0.16, 0.42, 0.20, -0.11, 0.27, 0, pants, root);
+  const lFoot  = part('lleg-foot',  0.20, 0.08, 0.30, -0.11, 0.04, 0.04, boot, root);
+  const rThigh = part('rleg-thigh', 0.18, 0.40, 0.22,  0.11, 0.69, 0, pants, root);
+  const rShin  = part('rleg-shin',  0.16, 0.42, 0.20,  0.11, 0.27, 0, pants, root);
+  const rFoot  = part('rleg-foot',  0.20, 0.08, 0.30,  0.11, 0.04, 0.04, boot, root);
+
+  // ----- Gear: helmet, vest, pouches, plate -----
+  // Helmet shell sits on the head; cloning the head clones these too
+  // because they're parented to it, so a headshot tears off head +
+  // helmet as one visual chunk.
   const gear: Mesh[] = [];
-  const part = (n: string, w: number, h: number, d: number, x: number, y: number, z: number, mat: StandardMaterial, parent: TransformNode): Mesh => {
-    const mesh = MeshBuilder.CreateBox(`hum-${name}-${n}`, { width: w, height: h, depth: d }, scene);
-    mesh.position = new Vector3(x, y, z);
-    mesh.material = mat;
-    mesh.parent = parent;
-    mesh.receiveShadows = true;
-    addShadowCaster(mesh);
-    gear.push(mesh);
-    return mesh;
+  const addGear = (m: Mesh): Mesh => { gear.push(m); return m; };
+
+  addGear(part('helmet',     0.30, 0.13, 0.30,  0,  0.10, 0.00, helmet, head));
+  addGear(part('helmet-rim', 0.32, 0.04, 0.32,  0,  0.03, 0.00, helmet, head));
+
+  // Body armor — vest plate + plate carrier on torso.
+  addGear(part('vest',       0.50, 0.46, 0.32,  0,    0.00, 0.01, vest, torso));
+  addGear(part('vest-plate', 0.30, 0.30, 0.04,  0,    0.00, 0.16, vest, torso));
+  // Belt + pouches on pelvis.
+  addGear(part('belt',       0.46, 0.06, 0.30,  0,    0.07, 0.00, vest, pelvis));
+  addGear(part('pouch-l',    0.10, 0.13, 0.10, -0.16, -0.02, 0.16, vest, pelvis));
+  addGear(part('pouch-r',    0.10, 0.13, 0.10,  0.16, -0.02, 0.16, vest, pelvis));
+  // Shoulder pads on the upper arms — track the limb so a torn-off
+  // arm flies away wearing its shoulder pad.
+  addGear(part('shoulder-l', 0.16, 0.10, 0.16,  0,    0.20, 0, vest, luArm));
+  addGear(part('shoulder-r', 0.16, 0.10, 0.16,  0,    0.20, 0, vest, ruArm));
+
+  return {
+    root, head, torso, pelvis,
+    leftUpperArm: luArm, leftForearm: lfArm,
+    rightUpperArm: ruArm, rightForearm: rfArm,
+    leftThigh: lThigh, leftShin: lShin, leftFoot: lFoot,
+    rightThigh: rThigh, rightShin: rShin, rightFoot: rFoot,
+    gear,
   };
-
-  // Helmet shell — flat box on top of the head. Parent: head.
-  part('helmet',     0.30, 0.13, 0.30,  0,  0.10, 0.00, helmet, head);
-  part('helmet-rim', 0.32, 0.04, 0.32,  0,  0.03, 0.00, helmet, head);
-
-  // Body armor — vest + plate + shoulders + belt + pouches. Parent: body.
-  part('vest',       0.58, 0.55, 0.36,  0,    0.15, 0.01, vest, body);
-  part('vest-plate', 0.30, 0.30, 0.04,  0,    0.15, 0.18, vest, body);
-  part('shoulder-l', 0.16, 0.16, 0.30, -0.27, 0.37, 0.00, vest, body);
-  part('shoulder-r', 0.16, 0.16, 0.30,  0.27, 0.37, 0.00, vest, body);
-  part('belt',       0.50, 0.06, 0.34,  0,   -0.13, 0.00, vest, body);
-  part('pouch-l',    0.10, 0.13, 0.10, -0.20, -0.21, 0.16, vest, body);
-  part('pouch-r',    0.10, 0.13, 0.10,  0.20, -0.21, 0.16, vest, body);
-
-  // Boots — at ground level, independent of crouch (parent: root, not legs).
-  part('boot-l',     0.20, 0.10, 0.30, -0.10,  0.06, 0.04, boot, root);
-  part('boot-r',     0.20, 0.10, 0.30,  0.10,  0.06, 0.04, boot, root);
-
-  return { root, body, head, legs, gear };
 }
 
-/** Sync a humanoid to a character's pose. Crouching shrinks the legs
- *  (they squat) and lowers the torso/head accordingly. Also resets all
- *  three rotation axes so a previously-tipped-over corpse stands back up
- *  when the character respawns. */
-export function syncHumanoidPose(parts: HumanoidParts, x: number, y: number, z: number, yaw: number, eye: number, height: number): void {
+/** Sync a humanoid to a character's pose. Crouch is approximated by
+ *  scaling the torso/head/arms down toward the pelvis and shrinking
+ *  the leg meshes so the body crouches in place. We don't yet animate
+ *  individual joints — the body holds a "rigid block" pose, but the
+ *  separation into discrete meshes is what dismemberment needs. */
+export function syncHumanoidPose(
+  parts: HumanoidParts,
+  x: number, y: number, z: number, yaw: number,
+  eye: number, height: number,
+): void {
   parts.root.position.set(x, y, z);
-  // Babylon default: rotation.y rotates around +Y, positive turns from +Z to +X
-  // (matches our yaw convention where forward = (sin yaw, 0, cos yaw)).
   parts.root.rotation.x = 0;
   parts.root.rotation.y = yaw;
   parts.root.rotation.z = 0;
 
-  // Scale legs by height-to-stand ratio (1.80 standing → factor 1, crouching ~1.30 → 0.72)
-  const legScale = Math.max(0.55, height / 1.80);
-  parts.legs.scaling.y = legScale;
-  parts.legs.position.y = 0.5 * legScale;
+  // Crouch ratio: 1.0 standing, ~0.72 crouching.
+  const crouchRatio = Math.max(0.55, height / 1.80);
+  // Shrink leg lengths and lower their centers proportionally so the
+  // feet stay planted on the ground.
+  const compress = (mesh: Mesh, restY: number): void => {
+    mesh.scaling.y = crouchRatio;
+    mesh.position.y = restY * crouchRatio;
+  };
+  compress(parts.leftThigh, 0.69);
+  compress(parts.leftShin, 0.27);
+  compress(parts.rightThigh, 0.69);
+  compress(parts.rightShin, 0.27);
+  // Feet stay full size at floor level.
+  parts.leftFoot.scaling.y = 1;
+  parts.rightFoot.scaling.y = 1;
+  parts.leftFoot.position.y = 0.04;
+  parts.rightFoot.position.y = 0.04;
 
-  parts.body.position.y = legScale * 0.95 + 0.10;
-  // Head position is relative to root.
-  parts.head.position.set(0, eye + 0.10, 0);
+  // Pelvis + torso + arms ride down with the legs.
+  const pelvisY = 0.99 * crouchRatio;
+  const torsoY = 1.32 * crouchRatio;
+  parts.pelvis.position.y = pelvisY;
+  parts.torso.position.y = torsoY;
+  parts.leftUpperArm.position.y = 1.27 * crouchRatio;
+  parts.rightUpperArm.position.y = 1.27 * crouchRatio;
+  parts.leftForearm.position.y = 0.85 * crouchRatio;
+  parts.rightForearm.position.y = 0.85 * crouchRatio;
+
+  // Head sits at eye + small offset so it stays consistent with the
+  // hitbox model regardless of crouch.
+  parts.head.position.set(0, eye + 0.06, 0);
 }
 
 export function disposeHumanoid(parts: HumanoidParts): void {
-  parts.body.dispose();
   parts.head.dispose();
-  parts.legs.dispose();
+  parts.torso.dispose();
+  parts.pelvis.dispose();
+  parts.leftUpperArm.dispose();
+  parts.leftForearm.dispose();
+  parts.rightUpperArm.dispose();
+  parts.rightForearm.dispose();
+  parts.leftThigh.dispose();
+  parts.leftShin.dispose();
+  parts.leftFoot.dispose();
+  parts.rightThigh.dispose();
+  parts.rightShin.dispose();
+  parts.rightFoot.dispose();
   for (const g of parts.gear) g.dispose();
   parts.root.dispose();
 }
 
-/** Tear a body part off the humanoid for a gore-kill effect. Clones the
- *  matching mesh at its current world transform, reparents the clone to
- *  the scene root (so it can fly freely without following the corpse),
- *  and hides the original on the humanoid so the body looks mutilated.
- *  Returns the detached mesh so the visuals module can run physics on
- *  it and let it fall to the ground.
- *
- *  Helmet pieces ride along when the head goes — they're parented to the
- *  head, so cloning the head alone leaves them stuck mid-air. The
- *  function returns the additional helmet clones via the second return
- *  slot for the same physics treatment. */
+/** Tear a body part off the humanoid. Picks meshes that match the
+ *  hitbox kind, clones each at its current absolute world transform,
+ *  hides the originals on the corpse, and returns the detached
+ *  meshes so the visuals layer can run gib physics on them. The
+ *  primary mesh is launched first (it's the "main" chunk), the
+ *  extras come along at slightly reduced velocity (limbs trailing
+ *  shoulder pads, helmet pieces following the head, etc.). */
 export function detachBodyPart(
   parts: HumanoidParts,
   kind: 'head' | 'arm' | 'leg' | 'chest',
 ): { primary: Mesh; extras: Mesh[] } | null {
+  // Pick a side at random for symmetric limbs. Both sides may already
+  // be detached (e.g. multiple shots hitting different limbs) — in
+  // that case we fall through and return null.
+  const pickArm = (): Mesh[] => {
+    if (parts.leftUpperArm.isEnabled()) return [parts.leftUpperArm, parts.leftForearm];
+    if (parts.rightUpperArm.isEnabled()) return [parts.rightUpperArm, parts.rightForearm];
+    return [];
+  };
+  const pickLeg = (): Mesh[] => {
+    if (parts.leftThigh.isEnabled()) return [parts.leftThigh, parts.leftShin, parts.leftFoot];
+    if (parts.rightThigh.isEnabled()) return [parts.rightThigh, parts.rightShin, parts.rightFoot];
+    return [];
+  };
+
   let primaryOriginal: Mesh | undefined;
   const extraOriginals: Mesh[] = [];
 
   switch (kind) {
-    case 'head':
+    case 'head': {
+      if (!parts.head.isEnabled()) return null;
       primaryOriginal = parts.head;
-      // The helmet shell + rim are parented to head — they have to come
-      // along or they'll float in mid-air.
+      // Helmet is parented to the head — cloning the head sphere alone
+      // wouldn't take the helmet shell. Treat helmet pieces as extras.
       for (const g of parts.gear) {
-        if (g.name.includes('helmet')) extraOriginals.push(g);
+        if (g.name.includes('helmet') && g.isEnabled()) extraOriginals.push(g);
       }
       break;
-    case 'leg':
-      primaryOriginal = parts.legs;
-      // Boots are root-parented, but rip the closer one off too for
-      // visual coherence.
-      for (const g of parts.gear) {
-        if (g.name.includes('boot')) extraOriginals.push(g);
-      }
+    }
+    case 'arm': {
+      const armPieces = pickArm();
+      if (armPieces.length === 0) return null;
+      primaryOriginal = armPieces[0];
+      for (let i = 1; i < armPieces.length; i++) extraOriginals.push(armPieces[i]!);
+      // Drag the matching shoulder pad along.
+      const side = primaryOriginal === parts.leftUpperArm ? 'shoulder-l' : 'shoulder-r';
+      const pad = parts.gear.find(g => g.name.includes(side) && g.isEnabled());
+      if (pad) extraOriginals.push(pad);
       break;
-    case 'arm':
-      // We don't have a dedicated arm mesh — the shoulder gear stands
-      // in for the limb. Pick whichever shoulder is still attached.
-      for (const g of parts.gear) {
-        if (/shoulder-/.test(g.name) && g.isEnabled()) {
-          primaryOriginal = g; break;
-        }
-      }
+    }
+    case 'leg': {
+      const legPieces = pickLeg();
+      if (legPieces.length === 0) return null;
+      primaryOriginal = legPieces[0];
+      for (let i = 1; i < legPieces.length; i++) extraOriginals.push(legPieces[i]!);
       break;
-    case 'chest':
-      // Body shot — peel a shoulder pad off as a gib. The torso itself
-      // stays so the corpse still has a recognisable shape.
-      for (const g of parts.gear) {
-        if (/shoulder-/.test(g.name) && g.isEnabled()) {
-          primaryOriginal = g; break;
-        }
-      }
+    }
+    case 'chest': {
+      // Centre-mass kill — peel off the vest plate as a token chunk so
+      // the corpse looks mutilated even when no limb came off. The
+      // torso itself stays so the body is still recognisable.
+      const plate = parts.gear.find(g => g.name.includes('vest-plate') && g.isEnabled());
+      if (!plate) return null;
+      primaryOriginal = plate;
       break;
+    }
   }
 
   if (!primaryOriginal) return null;
@@ -243,15 +340,15 @@ export function detachBodyPart(
   const clonePart = (orig: Mesh): Mesh | null => {
     const clone = orig.clone(`gib-${orig.name}`, null);
     if (!clone) return null;
-    // Clone retains the original's local transform; convert to absolute
-    // world transform before reparenting so the gib stays where the
-    // body part was visually.
     const absPos = orig.getAbsolutePosition();
     const absRot = orig.absoluteRotationQuaternion;
     clone.setParent(null);
     clone.position.copyFrom(absPos);
     clone.rotationQuaternion = absRot.clone();
     clone.rotation.set(0, 0, 0);
+    // Reset scaling — the clone might have inherited a crouch squish
+    // from the original; we want the gib at full size as it tumbles.
+    clone.scaling.set(1, 1, 1);
     return clone;
   };
 
