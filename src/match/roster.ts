@@ -127,14 +127,18 @@ export function resetRoster(
     resetCharacterForRound(c, 'CT', spawn, { keepInventory: survivors.has(c.id) });
   }
 
-  // Sync the local controller to the new spawn position/yaw.
-  if (localPlayer.character.alive) {
-    const s = localPlayer.controller.state;
-    s.pos.copyFrom(localPlayer.character.pos);
-    s.yaw = localPlayer.character.yaw;
+  // Sync the local controller to the new spawn position/yaw. Always
+  // operate on the local player's *own* character + controller, even
+  // when they're currently possessing a teammate bot — the next round
+  // restores them to their own body and the bot resets via its own
+  // path (snapBotToCharacterPose).
+  if (localPlayer.ownCharacter.alive) {
+    const s = localPlayer.ownController.state;
+    s.pos.copyFrom(localPlayer.ownCharacter.pos);
+    s.yaw = localPlayer.ownCharacter.yaw;
     s.pitch = 0;
     s.vel.set(0, 0, 0);
-    localPlayer.controller.snapToGround();
+    localPlayer.ownController.snapToGround();
   }
 }
 

@@ -229,6 +229,15 @@ function bootstrap(): void {
       atk.killWeapons.push(weapon as never);
     }
     if (vic) vic.deaths += 1;
+    // If the possessed bot just died, drop possession so the player
+    // re-enters spectator mode and can pick a different teammate to
+    // take over (rather than getting stuck inside a corpse).
+    if (localPlayer.possessedBotId && localPlayer.possessedBotId === victimId) {
+      const possessed = bots.find(b => b.id === localPlayer.possessedBotId);
+      if (possessed) possessed.aiDisabled = false;
+      localPlayer.releasePossession();
+      fps.bindController(localPlayer.controller);
+    }
   });
 
   // Bomb plant → both strategists re-plan: T defends the planted site,
@@ -273,6 +282,15 @@ function bootstrap(): void {
     // Drop any in-flight grenades / smokes / fire patches from the
     // previous round — none of that should bleed into the new round.
     grenadeSystem.reset();
+    // The local player respawns in their own body next round, so release
+    // any active possession before we reset bot state. The previously-
+    // possessed bot regains its AI for the new round.
+    if (localPlayer.possessedBotId) {
+      const possessed = bots.find(b => b.id === localPlayer.possessedBotId);
+      if (possessed) possessed.aiDisabled = false;
+      localPlayer.releasePossession();
+      fps.bindController(localPlayer.controller);
+    }
     const tBots: Bot[] = [];
     const ctBots: Bot[] = [];
     for (const bot of bots) {
@@ -402,6 +420,9 @@ function bootstrap(): void {
   // ---- Sim systems ----
   loop.registerSim((dtMs) => {
     const nowMs = time.simMs + dtMs; // step time updates AFTER sim systems run, so use computed
+    // Resolve the active controller this tick — flips to a possessed
+    // bot's controller while the player is dead and driving a teammate.
+    const ctrl = localPlayer.controller;
     pathService.beginFrame();
     fps.applyMouseLook();
 
@@ -420,7 +441,7 @@ function bootstrap(): void {
       if (input.isDown('KeyD')) strafe += 1;
       if (input.isDown('KeyA')) strafe -= 1;
     }
-    const yaw = controller.state.yaw;
+    const yaw = ctrl.state.yaw;
     const fX = Math.sin(yaw), fZ = Math.cos(yaw);
     const rX = Math.cos(yaw), rZ = -Math.sin(yaw);
 
@@ -432,7 +453,7 @@ function bootstrap(): void {
     const wishZ = fZ * forward + rZ * strafe;
 
     const movementLocked = isMovementLocked(match.round);
-    controller.step(dtMs, {
+    ctrl.step(dtMs, {
       wishX: movementLocked ? 0 : wishX,
       wishZ: movementLocked ? 0 : wishZ,
       jump: !movementLocked && input.isDown('Space'),
@@ -528,6 +549,29 @@ function bootstrap(): void {
     if (!localPlayer.character.alive && input.pointerLocked && !buyMenu.isOpen()) {
       if (input.wasMousePressed(0)) spectator.next();
       if (input.wasMousePressed(2)) spectator.prev();
+      // F takes over the currently-spectated teammate. The spectator's
+      // `currentTarget()` is refreshed each render frame against the
+      // alive roster, so this picks the bot the camera is already
+      // following. We don't allow re-possessing — once the player is
+      // controlling a bot they're "alive" in that bot's body.
+      if (input.wasPressed('KeyF')) {
+        const target = spectator.currentTarget();
+        if (target && target.character.alive && !target.aiDisabled) {
+          target.aiDisabled = true;
+          // Wipe any stale brain/path state so the bot doesn't keep
+          // chasing its old objective once we release possession later.
+          target.brain.state = 'idle';
+          target.path = null;
+          target.pathIdx = 0;
+          localPlayer.possess(target);
+          fps.bindController(target.controller);
+          if (target.character.inventory) {
+            viewModel.setWeapon(activeInstance(target.character.inventory));
+          }
+          // Keep the input layer locked so WASD/mouse start driving the
+          // new body immediately on the next sim tick.
+        }
+      }
     }
     if (!localPlayer.character.alive && inst && inst.scopeLevel > 0) {
       inst.scopeLevel = 0;
@@ -543,10 +587,10 @@ function bootstrap(): void {
       localPlayer.character.alive &&
       activeInst.def.slot !== 'c4'
     ) {
-      const eyeX = controller.state.pos.x;
-      const eyeY = controller.state.pos.y + controller.state.currentEye;
-      const eyeZ = controller.state.pos.z;
-      const py = controller.state.pitch;
+      const eyeX = ctrl.state.pos.x;
+      const eyeY = ctrl.state.pos.y + ctrl.state.currentEye;
+      const eyeZ = ctrl.state.pos.z;
+      const py = ctrl.state.pitch;
       const cosP = Math.cos(py);
       const fwdX = Math.sin(yaw) * cosP;
       const fwdY = Math.sin(py);
@@ -635,6 +679,11 @@ function bootstrap(): void {
 
       for (const bot of bots) {
         if (!bot.character.alive) continue;
+        // Skip the AI tick entirely while the local player is in this
+        // body — the loop below feeds the bot's controller from input
+        // (via localPlayer.controller) and the brain would otherwise
+        // overwrite yaw/pitch and try to drive movement.
+        if (bot.aiDisabled) continue;
         bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
         const isT = bot.character.team === 'T';
         const board = isT ? tBoard : ctBoard;
@@ -669,6 +718,7 @@ function bootstrap(): void {
       // and bots are ready to engage the moment freeze ends.
       for (const bot of bots) {
         if (!bot.character.alive) continue;
+        if (bot.aiDisabled) continue;
         bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
       }
     }
@@ -834,7 +884,7 @@ function bootstrap(): void {
     } else {
       fps.resetFov();
     }
-    scopeHud.setLevel(effectiveScopeLevel);
+    scopeHud.setLevel(effectiveScopeLevel, renderInst?.def.scopeStyle ?? 'sniper');
 
     fps.syncRender();
     // Spectator override: while the local player is dead, refresh the
@@ -847,20 +897,26 @@ function bootstrap(): void {
       spectator.applyToCamera(fps.camera);
       viewModel.setVisible(false);
     } else {
-      viewModel.setVisible(effectiveScopeLevel === 0);
+      // Hide the view model only when a sniper-style scope is up — for
+      // ADS-style aim-down-sights we keep the gun on screen so the player
+      // still sees the iron-sight silhouette.
+      const sniperScoped =
+        effectiveScopeLevel > 0 && (renderInst?.def.scopeStyle ?? 'sniper') === 'sniper';
+      viewModel.setVisible(!sniperScoped);
     }
     spectatorHud.setActive(isDead, spectator.currentTarget()?.id ?? null);
     // Keep the view model in sync with whatever weapon is currently active.
     // This catches purchases (which auto-switch the active slot) without
     // requiring an explicit setWeapon call from every code path.
     viewModel.setWeapon(renderInst);
-    viewModel.update(controller.state.speed, renderDtMs);
+    const renderCtrl = localPlayer.controller;
+    viewModel.update(renderCtrl.state.speed, renderDtMs);
     for (const b of bots) syncBotMesh(b);
     c4Entity.update(match.round?.bomb ?? null, time.simMs);
 
     const cam = fps.camera;
-    const yaw = controller.state.yaw;
-    const py = controller.state.pitch;
+    const yaw = renderCtrl.state.yaw;
+    const py = renderCtrl.state.pitch;
     const cosP = Math.cos(py);
     setListenerPose(
       cam.position.x, cam.position.y, cam.position.z,

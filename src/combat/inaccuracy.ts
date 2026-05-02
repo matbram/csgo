@@ -16,9 +16,20 @@ export interface ShooterMotion {
   crouching: boolean;
 }
 
-/** Inaccuracy in degrees (half-angle of error cone). */
+/** Inaccuracy in degrees (half-angle of error cone).
+ *
+ *  Stationary, grounded shooters are treated as pin-point accurate — the
+ *  bullet flies exactly along the aim vector plus the deterministic spray
+ *  pattern. This matches the player expectation that "if I'm standing still
+ *  and aiming at a spot, I should hit it." Movement, jumping, and the
+ *  spray pattern's per-shot offset still cause shots to drift; what's
+ *  removed is the gun's random base-cone wiggle while perfectly still. */
 export function computeInaccuracy(def: WeaponDef, motion: ShooterMotion): number {
-  // Base inaccuracy (also affected by crouch).
+  const stationary = motion.speed < 1.0 && !motion.inAir;
+  if (stationary) return 0;
+
+  // Base inaccuracy (also affected by crouch). Only contributes when
+  // moving or airborne — see the early return above.
   let acc = def.baseInaccuracyDeg;
   if (motion.crouching) {
     acc *= def.crouchInaccuracyMul;

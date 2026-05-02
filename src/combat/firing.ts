@@ -91,6 +91,17 @@ export class FiringController {
       }
     }
 
+    // 3b) Auto-reload when the magazine is dry. Triggers on any tick where
+    //     the weapon is in 'empty' state with reserve ammo available — so
+    //     the player doesn't have to remember to press R after a spray.
+    if (inst.state === 'empty' && inst.ammoReserve > 0 && !isMelee && inst.def.magazine > 0) {
+      inst.state = 'reloading';
+      inst.stateUntilMs = nowMs + inst.def.reloadMs;
+      if (inst.scopeLevel > 0) inst.scopeLevel = 0;
+      events.emit('combat:reload', { shooterId: shooter.id, weapon: inst.def.id, tMs: nowMs });
+      return 'none';
+    }
+
     // 4) Fire if allowed.
     const canFire = inst.state === 'ready' && (isMelee || inst.ammoMag > 0);
     if (!canFire) return 'none';
@@ -161,9 +172,11 @@ export class FiringController {
         inst.state = 'empty';
       }
     }
-    // Firing a scoped weapon drops scope so the next shot uses normal aim
-    // and the view model returns. CS:GO behavior for sniper rifles.
-    if (inst.scopeLevel > 0) {
+    // Firing a sniper-style scope drops the scope so the next shot uses
+    // normal aim and the view model returns. CS:GO behavior for the AWP.
+    // ADS-style scopes (rifles, pistols) persist across shots so the
+    // player can keep aiming down sights through a burst.
+    if (inst.scopeLevel > 0 && (inst.def.scopeStyle ?? 'sniper') === 'sniper') {
       inst.scopeLevel = 0;
     }
     return secondary ? 'secondary' : 'primary';

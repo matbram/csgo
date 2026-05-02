@@ -49,6 +49,11 @@ export interface Bot {
    *  been promoted to "active" yet. */
   perception: Perception;
   brain: Brain;
+  /** When true the main loop skips this bot's AI tick (perception, brain,
+   *  stepBot). Set while the local player is possessing this bot after
+   *  death — otherwise the brain would overwrite the player's mouse aim
+   *  and movement input every frame. */
+  aiDisabled: boolean;
 }
 
 let nextBotId = 1;
@@ -113,6 +118,7 @@ export function createBot(
     nextPlanAfterMs: 0,
     perception,
     brain,
+    aiDisabled: false,
   };
 }
 

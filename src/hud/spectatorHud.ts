@@ -16,7 +16,7 @@ export class SpectatorHud {
 
   setActive(active: boolean, targetId: string | null): void {
     if (active && targetId) {
-      this.el.textContent = `SPECTATING ${targetId.toUpperCase()}  ·  LMB next  ·  RMB previous`;
+      this.el.textContent = `SPECTATING ${targetId.toUpperCase()}  ·  LMB next  ·  RMB previous  ·  F take over`;
       if (!this.visible) {
         this.el.classList.remove('hidden');
         this.visible = true;

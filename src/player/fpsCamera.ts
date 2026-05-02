@@ -23,7 +23,10 @@ const BASE_SENS_AT_DEFAULT_FOV = 0.0022;
 
 export class FpsCamera {
   readonly camera: UniversalCamera;
-  private readonly player: CharacterController;
+  /** The controller whose state drives the camera. Swappable so the
+   *  camera can ride a possessed bot's controller after the local player
+   *  dies and takes over a teammate. */
+  private player: CharacterController;
   /** Bob phase advances with horizontal distance traveled. */
   private bobPhase = 0;
   /** Smoothed view bob offset components for a clean reset to zero. */
@@ -45,6 +48,13 @@ export class FpsCamera {
     // Disable Babylon's built-in input controllers — we drive yaw/pitch ourselves.
     this.camera.inputs.clear();
     scene.activeCamera = this.camera;
+  }
+
+  /** Re-bind the camera to a different controller. Called when the local
+   *  player possesses a teammate bot (their controller becomes ours) and
+   *  again when possession is released on the next round. */
+  bindController(controller: CharacterController): void {
+    this.player = controller;
   }
 
   /** Set the target vertical FOV in radians. The camera converges over a
