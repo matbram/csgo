@@ -67,6 +67,13 @@ import { BombHud } from './hud/bombHud';
 import { purchaseWeapon, purchaseArmor, purchaseKit } from './match/purchase';
 import type { Side } from './match/economy';
 
+/** Camera-local forward axis. Babylon's `getDirectionToRef` transforms
+ *  this through the camera's world matrix, giving us the exact view ray
+ *  the player sees down the crosshair. We allocate it once and reuse it
+ *  to avoid per-shot garbage. */
+const BABYLON_FORWARD = new Vector3(0, 0, 1);
+const camForward = new Vector3(0, 0, 0);
+
 function bootstrap(): void {
   const canvas = document.getElementById('render-canvas');
   if (!(canvas instanceof HTMLCanvasElement)) {
@@ -404,18 +411,39 @@ function bootstrap(): void {
     return out;
   };
 
-  // First round. Reset everyone first so beginRound's carrier pick sees
-  // alive characters; then begin the round; then assign the C4 to the carrier.
-  resetRoster(characters, localPlayer, world, match, snapshotSurvivors(/* alwaysIncludeLocal */ true));
-  match = beginRound(match, time.simMs, characters);
-  if (match.round?.bomb?.carrierId) {
-    assignBomb(characters, match.round.bomb.carrierId);
-  }
-  refreshBotsForNewRound();
-  if (match.round) {
-    events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
-    lastRoundNumber = match.round.number;
-  }
+  // Defer the very first round until the user actually clicks "Play"
+  // and acquires pointer lock. The render loop is already engaged by
+  // Babylon, so the freeze timer would otherwise tick down silently
+  // while the start overlay is still on screen — by the time the user
+  // clicked through, freeze had ended and bots had already pathed to
+  // their callouts, making it look like both teams were frozen on the
+  // map. Holding off the begin call keeps the round phase 'pre' (bots
+  // and player both stationary) until input is live.
+  let firstRoundStarted = false;
+  const startFirstRound = (): void => {
+    if (firstRoundStarted) return;
+    firstRoundStarted = true;
+    // Reset everyone first so beginRound's carrier pick sees alive
+    // characters; then begin the round; then assign the C4 to the
+    // carrier. We use the current simMs so the freeze window starts
+    // counting from "right now", not from 0.
+    resetRoster(characters, localPlayer, world, match, snapshotSurvivors(/* alwaysIncludeLocal */ true));
+    match = beginRound(match, time.simMs, characters);
+    if (match.round?.bomb?.carrierId) {
+      assignBomb(characters, match.round.bomb.carrierId);
+    }
+    refreshBotsForNewRound();
+    if (match.round) {
+      events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
+      lastRoundNumber = match.round.number;
+    }
+  };
+  // Kick off the round on the first pointer-lock acquisition. Subsequent
+  // lock events (e.g. after a buy menu / settings dialog) are ignored —
+  // by then the match is already running.
+  events.on('input:pointerLockChanged', ({ locked }) => {
+    if (locked) startFirstRound();
+  });
 
   // ---- Sim systems ----
   loop.registerSim((dtMs) => {
@@ -587,14 +615,20 @@ function bootstrap(): void {
       localPlayer.character.alive &&
       activeInst.def.slot !== 'c4'
     ) {
-      const eyeX = ctrl.state.pos.x;
-      const eyeY = ctrl.state.pos.y + ctrl.state.currentEye;
-      const eyeZ = ctrl.state.pos.z;
-      const py = ctrl.state.pitch;
-      const cosP = Math.cos(py);
-      const fwdX = Math.sin(yaw) * cosP;
-      const fwdY = Math.sin(py);
-      const fwdZ = Math.cos(yaw) * cosP;
+      // Fire from the camera's actual world position + forward vector
+      // so the bullet path is exactly the player's view ray. Reading
+      // ctrl.state.pos / pitch / yaw and reconstructing fwd works in
+      // most cases but can drift from what the camera actually shows
+      // (FOV lerp during scope, bob offsets, etc.) — using the camera
+      // pose guarantees crosshair-aligned shots.
+      const fwdRef = camForward;
+      fps.camera.getDirectionToRef(BABYLON_FORWARD, fwdRef);
+      const eyeX = fps.camera.position.x;
+      const eyeY = fps.camera.position.y;
+      const eyeZ = fps.camera.position.z;
+      const fwdX = fwdRef.x;
+      const fwdY = fwdRef.y;
+      const fwdZ = fwdRef.z;
 
       // Grenades are thrown, not hitscan-fired. LMB = full throw, RMB =
       // underhand. After a successful throw the consumed instance is
@@ -885,6 +919,12 @@ function bootstrap(): void {
       fps.resetFov();
     }
     scopeHud.setLevel(effectiveScopeLevel, renderInst?.def.scopeStyle ?? 'sniper');
+    // ADS view-model raise: only for "ads"-style scopes (rifles, pistols).
+    // Sniper scopes hide the view model entirely so the raise has no
+    // visual effect there.
+    const isAdsActive =
+      effectiveScopeLevel > 0 && (renderInst?.def.scopeStyle ?? 'sniper') === 'ads';
+    viewModel.setAds(isAdsActive);
 
     fps.syncRender();
     // Spectator override: while the local player is dead, refresh the
