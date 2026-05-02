@@ -574,18 +574,19 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
     if (dismember && partsForId) {
       const parts = partsForId(victimId);
       if (parts) {
-        // If we're tearing a limb mid-fight, the hit might have been
-        // recorded as 'leg'/'arm' but the explicit `limbDetached`
-        // signal wins — that's the one combat.fire decided crossed
-        // the threshold. Otherwise fall back to the hitbox kind.
+        // The `limbDetached` payload (kind + side) is the most
+        // authoritative signal: combat.fire only sets it when the
+        // counter actually crossed the threshold for that side. Fall
+        // back to the hitbox kind for killing/corpse hits where no
+        // explicit limb tear was recorded.
         const partKind: 'head' | 'arm' | 'leg' | 'chest' =
-          limbDetached === 'leg' ? 'leg'
-          : limbDetached === 'arm' ? 'arm'
+          limbDetached?.kind === 'leg' ? 'leg'
+          : limbDetached?.kind === 'arm' ? 'arm'
           : hitbox === 'head' ? 'head'
           : hitbox === 'leg' ? 'leg'
           : hitbox === 'arm' ? 'arm'
           : 'chest';
-        const detached = detachBodyPart(parts, partKind);
+        const detached = detachBodyPart(parts, partKind, limbDetached?.side);
         if (detached) {
           // Initial velocity in the bullet's direction, with random
           // splay. Heads kick harder than shoulders so the visual is

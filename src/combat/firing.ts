@@ -127,11 +127,13 @@ export class FiringController {
 
     // Compute inaccuracy at fire time. A scoped weapon trades movement for
     // pinpoint precision — apply the configured multiplier when active.
+    const armsGone =
+      (shooter.leftArmDetached ? 1 : 0) + (shooter.rightArmDetached ? 1 : 0);
     let inacc = computeInaccuracy(inst.def, {
       speed: shooter.speed,
       inAir: shooter.inAir,
       crouching: shooter.crouching,
-      armDetached: shooter.armDetached,
+      armsGone,
     });
     if (inst.scopeLevel > 0 && inst.def.scopedInaccuracyMul !== undefined) {
       inacc *= inst.def.scopedInaccuracyMul;

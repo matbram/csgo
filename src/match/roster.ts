@@ -46,10 +46,14 @@ export function resetCharacterForRound(
   c.inAir = false;
   c.speed = 0;
   c.flashedUntilMs = 0;
-  c.legDamage = 0;
-  c.armDamage = 0;
-  c.legDetached = false;
-  c.armDetached = false;
+  c.leftLegDamage = 0;
+  c.rightLegDamage = 0;
+  c.leftArmDamage = 0;
+  c.rightArmDamage = 0;
+  c.leftLegDetached = false;
+  c.rightLegDetached = false;
+  c.leftArmDetached = false;
+  c.rightArmDetached = false;
   // Currently-armor and helmet are persistent goods — they're consumed
   // by damage, so we don't reset them. New round: keep what survived.
   // If the player died, the natural CS:GO behavior is they respawn fresh

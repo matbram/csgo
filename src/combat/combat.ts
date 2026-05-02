@@ -144,6 +144,7 @@ export class CombatSystem {
     let bestVictim: Character | null = null;
     let bestVictimWasAlive = true;
     let bestKind: HitboxKind = 'chest';
+    let bestSide: 'left' | 'right' | null = null;
     let bestPoint = { x: 0, y: 0, z: 0 };
     for (const c of this.characters()) {
       if (c.id === opts.shooter.id) continue;
@@ -159,6 +160,7 @@ export class CombatSystem {
           bestVictim = c;
           bestVictimWasAlive = true;
           bestKind = hit.kind;
+          bestSide = hit.side;
           bestPoint = { x: hit.hitX, y: hit.hitY, z: hit.hitZ };
         }
       } else {
@@ -179,7 +181,9 @@ export class CombatSystem {
           // Pick a random surviving limb as the "hit" location so the
           // dismemberment routine peels something off instead of the
           // same limb every shot.
-          bestKind = pickRandomCorpseLimb();
+          const pick = pickRandomCorpseLimb();
+          bestKind = pick.kind;
+          bestSide = pick.side;
           bestPoint = {
             x: opts.ox + finalDir.x * t,
             y: opts.oy + finalDir.y * t,
@@ -194,7 +198,7 @@ export class CombatSystem {
       const corpseHit = !bestVictimWasAlive;
       let hpDelta = 0;
       let killing = false;
-      let limbDetached: 'leg' | 'arm' | null = null;
+      let limbDetached: { kind: 'leg' | 'arm'; side: 'left' | 'right' } | null = null;
       if (!corpseHit) {
         const damageMul = opts.damageMul ?? 1;
         const dmg = computeDamage({
@@ -210,22 +214,37 @@ export class CombatSystem {
         if (dmg.helmetDestroyed) bestVictim.helmet = false;
         killing = bestVictim.hp <= 0;
 
-        // Cumulative limb damage. Crossing the detach threshold rips
-        // the limb off mid-fight — the victim doesn't have to die for
-        // a leg/arm to come off, just take enough punishment to that
-        // limb. We only count ACTUAL hp damage (hpDelta) so armour
-        // soaking absorbs limb damage too.
-        if (bestKind === 'leg' && !bestVictim.legDetached) {
-          bestVictim.legDamage += hpDelta;
-          if (bestVictim.legDamage >= LIMB_DETACH_THRESHOLD) {
-            bestVictim.legDetached = true;
-            limbDetached = 'leg';
+        // Per-side limb damage. Each side has its own counter, so two
+        // shots to the same leg detach that leg without affecting the
+        // other one. Only ACTUAL hp damage counts (hpDelta) so armour
+        // absorption applies to limbs too.
+        if (bestKind === 'leg' && bestSide !== null) {
+          if (bestSide === 'left' && !bestVictim.leftLegDetached) {
+            bestVictim.leftLegDamage += hpDelta;
+            if (bestVictim.leftLegDamage >= LIMB_DETACH_THRESHOLD) {
+              bestVictim.leftLegDetached = true;
+              limbDetached = { kind: 'leg', side: 'left' };
+            }
+          } else if (bestSide === 'right' && !bestVictim.rightLegDetached) {
+            bestVictim.rightLegDamage += hpDelta;
+            if (bestVictim.rightLegDamage >= LIMB_DETACH_THRESHOLD) {
+              bestVictim.rightLegDetached = true;
+              limbDetached = { kind: 'leg', side: 'right' };
+            }
           }
-        } else if (bestKind === 'arm' && !bestVictim.armDetached) {
-          bestVictim.armDamage += hpDelta;
-          if (bestVictim.armDamage >= LIMB_DETACH_THRESHOLD) {
-            bestVictim.armDetached = true;
-            limbDetached = 'arm';
+        } else if (bestKind === 'arm' && bestSide !== null) {
+          if (bestSide === 'left' && !bestVictim.leftArmDetached) {
+            bestVictim.leftArmDamage += hpDelta;
+            if (bestVictim.leftArmDamage >= LIMB_DETACH_THRESHOLD) {
+              bestVictim.leftArmDetached = true;
+              limbDetached = { kind: 'arm', side: 'left' };
+            }
+          } else if (bestSide === 'right' && !bestVictim.rightArmDetached) {
+            bestVictim.rightArmDamage += hpDelta;
+            if (bestVictim.rightArmDamage >= LIMB_DETACH_THRESHOLD) {
+              bestVictim.rightArmDetached = true;
+              limbDetached = { kind: 'arm', side: 'right' };
+            }
           }
         }
 
@@ -361,15 +380,16 @@ function raySphereWorld(
 }
 
 /** Random surviving-limb pick for a corpse hit. Weighted toward
- *  arms/legs so center-mass spam shreds limbs first; head and chest
+ *  arms/legs so centre-mass spam shreds limbs first; head and chest
  *  still come up so a sustained burst eventually hollows the body
- *  out completely. */
-function pickRandomCorpseLimb(): HitboxKind {
+ *  out completely. Side is random for limbs, null for head/chest. */
+function pickRandomCorpseLimb(): { kind: HitboxKind; side: 'left' | 'right' | null } {
   const r = Math.random();
-  if (r < 0.40) return 'leg';
-  if (r < 0.70) return 'arm';
-  if (r < 0.90) return 'chest';
-  return 'head';
+  const side: 'left' | 'right' = Math.random() < 0.5 ? 'left' : 'right';
+  if (r < 0.40) return { kind: 'leg', side };
+  if (r < 0.70) return { kind: 'arm', side };
+  if (r < 0.90) return { kind: 'chest', side: null };
+  return { kind: 'head', side: null };
 }
 
 /** Convenience export so consumers don't need to import inaccuracy + def. */

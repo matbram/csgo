@@ -396,27 +396,36 @@ export function disposeHumanoid(parts: HumanoidParts): void {
 }
 
 /** Tear a body part off the humanoid. Picks meshes that match the
- *  hitbox kind, clones each at its current absolute world transform,
- *  hides the originals on the corpse, and returns the detached
- *  meshes so the visuals layer can run gib physics on them. The
- *  primary mesh is launched first (it's the "main" chunk), the
+ *  hitbox kind + side, clones each at its current absolute world
+ *  transform, hides the originals on the corpse, and returns the
+ *  detached meshes so the visuals layer can run gib physics on them.
+ *  The primary mesh is launched first (it's the "main" chunk), the
  *  extras come along at slightly reduced velocity (limbs trailing
  *  shoulder pads, helmet pieces following the head, etc.). */
 export function detachBodyPart(
   parts: HumanoidParts,
   kind: 'head' | 'arm' | 'leg' | 'chest',
+  side?: 'left' | 'right',
 ): { primary: Mesh; extras: Mesh[] } | null {
-  // Pick a side at random for symmetric limbs. Both sides may already
-  // be detached (e.g. multiple shots hitting different limbs) — in
-  // that case we fall through and return null.
-  const pickArm = (): Mesh[] => {
-    if (parts.leftUpperArm.isEnabled()) return [parts.leftUpperArm, parts.leftForearm];
-    if (parts.rightUpperArm.isEnabled()) return [parts.rightUpperArm, parts.rightForearm];
+  // Resolve which side to detach for arms and legs. The caller can
+  // pass an explicit side; if not, fall back to whichever side is
+  // still attached (preferring left).
+  const pickArm = (s: 'left' | 'right'): Mesh[] => {
+    if (s === 'left' && parts.leftUpperArm.isEnabled()) {
+      return [parts.leftUpperArm, parts.leftForearm];
+    }
+    if (s === 'right' && parts.rightUpperArm.isEnabled()) {
+      return [parts.rightUpperArm, parts.rightForearm];
+    }
     return [];
   };
-  const pickLeg = (): Mesh[] => {
-    if (parts.leftThigh.isEnabled()) return [parts.leftThigh, parts.leftShin, parts.leftFoot];
-    if (parts.rightThigh.isEnabled()) return [parts.rightThigh, parts.rightShin, parts.rightFoot];
+  const pickLeg = (s: 'left' | 'right'): Mesh[] => {
+    if (s === 'left' && parts.leftThigh.isEnabled()) {
+      return [parts.leftThigh, parts.leftShin, parts.leftFoot];
+    }
+    if (s === 'right' && parts.rightThigh.isEnabled()) {
+      return [parts.rightThigh, parts.rightShin, parts.rightFoot];
+    }
     return [];
   };
 
@@ -435,18 +444,22 @@ export function detachBodyPart(
       break;
     }
     case 'arm': {
-      const armPieces = pickArm();
+      const wantSide: 'left' | 'right' = side
+        ?? (parts.leftUpperArm.isEnabled() ? 'left' : 'right');
+      const armPieces = pickArm(wantSide);
       if (armPieces.length === 0) return null;
       primaryOriginal = armPieces[0];
       for (let i = 1; i < armPieces.length; i++) extraOriginals.push(armPieces[i]!);
       // Drag the matching shoulder pad along.
-      const side = primaryOriginal === parts.leftUpperArm ? 'shoulder-l' : 'shoulder-r';
-      const pad = parts.gear.find(g => g.name.includes(side) && g.isEnabled());
+      const tag = wantSide === 'left' ? 'shoulder-l' : 'shoulder-r';
+      const pad = parts.gear.find(g => g.name.includes(tag) && g.isEnabled());
       if (pad) extraOriginals.push(pad);
       break;
     }
     case 'leg': {
-      const legPieces = pickLeg();
+      const wantSide: 'left' | 'right' = side
+        ?? (parts.leftThigh.isEnabled() ? 'left' : 'right');
+      const legPieces = pickLeg(wantSide);
       if (legPieces.length === 0) return null;
       primaryOriginal = legPieces[0];
       for (let i = 1; i < legPieces.length; i++) extraOriginals.push(legPieces[i]!);

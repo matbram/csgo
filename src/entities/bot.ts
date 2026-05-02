@@ -97,10 +97,10 @@ export function createBot(
     speed: 0,
     inAir: false,
     crouching: false,
-    legDamage: 0,
-    armDamage: 0,
-    legDetached: false,
-    armDetached: false,
+    leftLegDamage: 0, rightLegDamage: 0,
+    leftArmDamage: 0, rightArmDamage: 0,
+    leftLegDetached: false, rightLegDetached: false,
+    leftArmDetached: false, rightArmDetached: false,
   };
   syncHumanoidPose(parts, character.pos.x, character.pos.y, character.pos.z, character.yaw, character.currentEye, character.currentHeight);
 
@@ -296,10 +296,14 @@ function activeMoveSpeedScale(bot: Bot): number {
     case 'c4':        scale = inv.c4?.def.moveSpeedScale ?? 1; break;
     case 'grenade':   scale = inv.grenades[inv.activeGrenadeIdx]?.def.moveSpeedScale ?? 1; break;
   }
-  // Limping bot: a leg-detached bot moves half-speed too. They keep
-  // pathing toward objectives but won't out-run anyone, which is what
-  // you'd expect after losing a leg.
-  if (bot.character.legDetached) scale *= 0.5;
+  // Limping bot. One leg gone → half-speed; both legs gone → crawl.
+  // The brain still pathfinds normally — it just makes much slower
+  // progress. A leg-amputated bot is effectively easy meat.
+  const legsGone =
+    (bot.character.leftLegDetached ? 1 : 0)
+    + (bot.character.rightLegDetached ? 1 : 0);
+  if (legsGone === 1) scale *= 0.50;
+  else if (legsGone >= 2) scale *= 0.18;
   return scale;
 }
 
@@ -315,15 +319,31 @@ function smoothYaw(current: number, target: number, dtMs: number): number {
 
 /** Per render-frame: position + orient the humanoid mesh, and sync
  *  the visible weapon to whatever the bot currently has equipped.
- *  Tipped-over pose for dead bots. */
+ *  Tipped-over pose for dead bots; crawling pitch when both legs are
+ *  blown off. */
 export function syncBotMesh(bot: Bot): void {
   const c = bot.character;
   if (!c.alive) {
     bot.parts.root.rotation.x = -Math.PI / 2.2;
+    bot.parts.root.rotation.z = 0;
     bot.parts.root.position.set(c.pos.x, c.pos.y + 0.2, c.pos.z);
     return;
   }
   syncHumanoidPose(bot.parts, c.pos.x, c.pos.y, c.pos.z, c.yaw, c.currentEye, c.currentHeight);
+  // Both legs gone → tip the torso forward so the body looks like
+  // it's dragging itself along the ground. One leg gone → small
+  // limp tilt so the bot reads as wounded instead of standing
+  // straight on a missing limb.
+  const legsGone =
+    (c.leftLegDetached ? 1 : 0) + (c.rightLegDetached ? 1 : 0);
+  if (legsGone >= 2) {
+    bot.parts.root.rotation.x = -Math.PI / 2.4;
+    bot.parts.root.position.y = c.pos.y + 0.20;
+  } else if (legsGone === 1) {
+    // Lean toward the missing side so the silhouette obviously limps.
+    const lean = c.leftLegDetached ? 0.25 : -0.25;
+    bot.parts.root.rotation.z = lean;
+  }
 
   // Pick a category for the weapon visual based on the active slot.
   // setHumanoidWeapon is idempotent on category, so calling it every
