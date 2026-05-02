@@ -28,6 +28,7 @@ import { forkRng, getMatchSeed, type SeededRng } from './rng';
 import type { WorldStateView } from './world/state';
 import { planFor } from './goap/planner';
 import type { PlannedAction, Goal, PlanInputs } from './goap/types';
+import { debugLog } from '../engine/debugLog';
 
 export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload' | 'plant' | 'defuse' | 'save' | 'throwGrenade';
 
@@ -382,16 +383,38 @@ export class Brain {
       }
     }
     // (Re)plan if needed: no plan, plan exhausted, or goal mismatch.
-    const needPlan =
-      !this.plannedActions ||
-      this.plannedActionIdx >= this.plannedActions.length ||
-      this.shouldReplan(bot, perception, ctx);
+    const exhausted = !this.plannedActions
+      || this.plannedActionIdx >= this.plannedActions.length;
+    const mismatch = !exhausted && this.shouldReplan(bot, perception, ctx);
+    const needPlan = exhausted || mismatch;
     if (needPlan) {
       const input = buildPlanInputs(bot, perception, ctx);
+      const t0 = performance.now();
       const result = planFor(input, bot.identity.personality);
+      const tookMs = performance.now() - t0;
       this.plannedActions = result?.plan ?? null;
       this.plannedActionIdx = 0;
       this.currentGoal = result?.goal ?? null;
+      _plannerPerf.calls += 1;
+      _plannerPerf.totalMs += tookMs;
+      _plannerPerf.maxMs = Math.max(_plannerPerf.maxMs, tookMs);
+      if (debugLog.isEnabled('planner')) {
+        debugLog.planner('replan', {
+          t: nowMs,
+          id: bot.id,
+          name: bot.identity.name,
+          reason: !this.plannedActions && exhausted ? 'no-plan'
+            : exhausted ? 'plan-complete'
+            : 'goal-mismatch',
+          goal: result?.goal.kind ?? '-',
+          urgency: result?.goal.urgency ?? null,
+          plan: result?.plan.map(a => a.kind) ?? [],
+          tookMs: Number(tookMs.toFixed(3)),
+          hp: bot.character.hp,
+          ammoFrac: input.ammoFraction,
+          enemiesAlive: ctx.enemiesAlive,
+        });
+      }
     }
 
     const head = this.plannedActions && this.plannedActionIdx < this.plannedActions.length
@@ -849,4 +872,19 @@ function aimErrorDegrees(curYaw: number, curPitch: number, tgtYaw: number, tgtPi
   while (dy < -Math.PI) dy += Math.PI * 2;
   const dp = tgtPitch - curPitch;
   return Math.hypot(dy, dp) * 180 / Math.PI;
+}
+
+/** Rolling planner perf counter — reset by `getPlannerPerf({reset:true})`.
+ *  Surfaced on `__game.perf.planner` so the user can call out
+ *  pathological frames ("the planner ran 14 ms last round"). */
+const _plannerPerf = { calls: 0, totalMs: 0, maxMs: 0 };
+export function getPlannerPerf(opts?: { reset?: boolean }): { calls: number; meanMs: number; maxMs: number } {
+  const meanMs = _plannerPerf.calls > 0 ? _plannerPerf.totalMs / _plannerPerf.calls : 0;
+  const out = { calls: _plannerPerf.calls, meanMs, maxMs: _plannerPerf.maxMs };
+  if (opts?.reset) {
+    _plannerPerf.calls = 0;
+    _plannerPerf.totalMs = 0;
+    _plannerPerf.maxMs = 0;
+  }
+  return out;
 }

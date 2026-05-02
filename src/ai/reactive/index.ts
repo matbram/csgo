@@ -33,6 +33,7 @@ import type { Bot } from '../../entities/bot';
 import { setBotObjective } from '../../entities/bot';
 import type { FirePatchField } from '../../grenades/firePatch';
 import { events } from '../../engine/events';
+import { debugLog } from '../../engine/debugLog';
 
 export interface ReactiveContext {
   fire: FirePatchField;
@@ -114,6 +115,14 @@ export function tickReactive(
       // brain RNG indirectly via the bot id parity.
       const sign = bot.id.charCodeAt(bot.id.length - 1) % 2 === 0 ? 1 : -1;
       ctrl.state.yaw += turn * sign;
+      if (debugLog.isEnabled('reactive')) {
+        debugLog.reactive('flash', {
+          t: nowMs, id: bot.id, name: bot.identity.name,
+          patience: bot.identity.personality.patience,
+          turnRad: Number((turn * sign).toFixed(2)),
+          untilMs: blindedUntil,
+        });
+      }
     }
     // Pitch nudge: look down a touch so reactive spray goes high.
     ctrl.state.pitch = Math.min(Math.PI / 4, ctrl.state.pitch + 0.2);
@@ -132,7 +141,15 @@ export function tickReactive(
       const desiredYaw = Math.atan2(dx, dz);
       const k = 0.45 * (1.3 - 0.6 * bot.identity.personality.patience);
       ctrl.state.yaw = lerpAngle(ctrl.state.yaw, desiredYaw, Math.min(0.8, k));
+      const wasFlinching = s.flinchUntilMs > nowMs;
       s.flinchUntilMs = nowMs + 200;
+      if (!wasFlinching && debugLog.isEnabled('reactive')) {
+        debugLog.reactive('flinch', {
+          t: nowMs, id: bot.id, name: bot.identity.name,
+          fromDir: { x: Number(dx.toFixed(2)), z: Number(dz.toFixed(2)) },
+          dot: Number(dot.toFixed(2)),
+        });
+      }
     }
   }
 
@@ -147,6 +164,13 @@ export function tickReactive(
     const fwdZ = Math.cos(ctrl.state.yaw);
     const escape = { x: c.pos.x + fwdX * 3, z: c.pos.z + fwdZ * 3 };
     setBotObjective(bot, escape.x, escape.z);
+    if (debugLog.isEnabled('reactive')) {
+      debugLog.reactive('molly', {
+        t: nowMs, id: bot.id, name: bot.identity.name,
+        from: { x: Number(c.pos.x.toFixed(1)), z: Number(c.pos.z.toFixed(1)) },
+        to: { x: Number(escape.x.toFixed(1)), z: Number(escape.z.toFixed(1)) },
+      });
+    }
   }
 
   // ── Panic (low-difficulty only) ───────────────────────────────
@@ -157,8 +181,21 @@ export function tickReactive(
     const outnumbered = enemiesAlive >= 2;
     if (!s.panicActive && c.hp <= threshold && outnumbered) {
       s.panicActive = true;
+      if (debugLog.isEnabled('reactive')) {
+        debugLog.reactive('panic-on', {
+          t: nowMs, id: bot.id, name: bot.identity.name,
+          hp: c.hp, threshold: Number(threshold.toFixed(1)),
+          enemiesAlive,
+        });
+      }
     } else if (s.panicActive && (c.hp >= 50 || enemiesAlive <= 1)) {
       s.panicActive = false;
+      if (debugLog.isEnabled('reactive')) {
+        debugLog.reactive('panic-off', {
+          t: nowMs, id: bot.id, name: bot.identity.name,
+          hp: c.hp, enemiesAlive,
+        });
+      }
     }
     if (s.panicActive) {
       // Drop the current objective for spawn; clear plant/defuse intent

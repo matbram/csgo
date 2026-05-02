@@ -15,6 +15,7 @@ import type { Bot } from '../../entities/bot';
 import type { TeamBlackboard } from '../blackboard';
 import type { World } from '../../map/world';
 import { playCalloutCue } from '../../audio/audio';
+import { debugLog } from '../../engine/debugLog';
 
 export interface CommsContext {
   /** Resolve a bot id back to its live record (so triggers can read pos
@@ -270,6 +271,19 @@ function emit(
   });
   if (c) {
     playCalloutCue(c.kind, c.pos.x, c.pos.y, c.pos.z);
+    if (debugLog.isEnabled('comms')) {
+      debugLog.comms('emit', {
+        t: c.tEmitMs,
+        from: bot.id,
+        name: bot.identity.name,
+        side: c.side,
+        kind: c.kind,
+        where: c.where ?? '-',
+        site: c.site ?? '-',
+        count: c.count ?? '-',
+        target: c.enemyId ?? '-',
+      });
+    }
   }
 }
 

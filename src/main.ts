@@ -56,8 +56,10 @@ import { NavGrid } from './nav/grid';
 import { PathService } from './nav/pathService';
 import { makeBlackboard, aggregateKnown, refreshTeamRoster, aliveCount } from './ai/blackboard';
 import { planRoundStart, reactToBombPlanted } from './ai/strategist';
-import { setMatchSeed } from './ai/rng';
+import { setMatchSeed, getMatchSeed } from './ai/rng';
 import { buildWorldStateView, type WorldStateView } from './ai/world/state';
+import { downloadCapture } from './ai/diagnostics';
+import { getPlannerPerf } from './ai/brain';
 import { buildTacticalGraph, type TacticalGraph } from './ai/world/tacticalGraph';
 import { dust2Overlay } from './ai/world/tacticalOverlay.dust2';
 import { installCommsTriggers, tickComms, setCommsSimNow, applyCommsIntel } from './ai/comms/triggers';
@@ -159,11 +161,17 @@ function bootstrap(): void {
   // Seed the AI RNG before bots are constructed so each Brain forks a
   // stable per-bot stream from the match seed. A `?seed=N` URL param
   // overrides the wall-clock default — used for replaying a specific
-  // round during debugging.
-  const seedParam = new URLSearchParams(window.location.search).get('seed');
+  // round during debugging. `?diag=1` auto-enables every debug
+  // channel at boot so the user can capture a round end-to-end
+  // without typing console commands first.
+  const urlParams = new URLSearchParams(window.location.search);
+  const seedParam = urlParams.get('seed');
   if (seedParam) {
     const n = Number.parseInt(seedParam, 10);
     if (Number.isFinite(n)) setMatchSeed(n);
+  }
+  if (urlParams.get('diag') === '1') {
+    debugLog.enableAll();
   }
   const bots: Bot[] = [];
   for (let i = 0; i < 4; i++) {
@@ -1232,7 +1240,22 @@ function bootstrap(): void {
   // Quiet a couple of unused-ish references for the linter.
   void engine; void scene; void makeInstance; void playSound;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, bots, navGrid, pathService, characters, debugLog, get match() { return match; } };
+  (globalThis as any).__game = {
+    engine, scene, world, controller, localPlayer, fps,
+    debugHud, bots, navGrid, pathService, characters, debugLog,
+    tBoard, ctBoard,
+    get match() { return match; },
+    get seed() { return getMatchSeed(); },
+    get perf() {
+      return { planner: getPlannerPerf() };
+    },
+    /** Capture a snapshot of the current AI state + recent debug
+     *  channels and download it as a JSON file. Drag the file into
+     *  a chat to share with the developer. */
+    captureRound() {
+      downloadCapture({ bots, match, tBoard, ctBoard });
+    },
+  };
 }
 
 function currentInstance(p: LocalPlayer): WeaponInstance | null {

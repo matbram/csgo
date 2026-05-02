@@ -33,6 +33,7 @@ import { reapplyCurrentStrategy } from '../strategist';
 import type { Callout } from '../comms/callouts';
 import { setBotObjective } from '../../entities/bot';
 import { polygonCentroid } from '../../map/world';
+import { debugLog } from '../../engine/debugLog';
 
 export interface CoordinatorContext {
   botById: Map<string, Bot>;
@@ -57,7 +58,7 @@ export function installSquadCoordinator(ctx: CoordinatorContext): void {
   if (installed) return;
   installed = true;
 
-  events.on('combat:kill', ({ victimId }) => {
+  events.on('combat:kill', ({ victimId, tMs }) => {
     const ctx = ctxRef;
     if (!ctx) return;
     const victim = ctx.botById.get(victimId);
@@ -65,7 +66,18 @@ export function installSquadCoordinator(ctx: CoordinatorContext): void {
     // Re-fit roles for the victim's team. Survivors slot into the
     // same plan, compactly.
     const board = victim.character.team === 'T' ? ctx.tBoard : ctx.ctBoard;
+    const aliveCount = ctx.bots().filter(b => b.character.team === board.side && b.character.alive).length;
     reapplyCurrentStrategy(board, ctx.bots(), ctx.world, ctx.navGrid, ctx.simMs());
+    if (debugLog.isEnabled('squad')) {
+      debugLog.squad('refit', {
+        t: tMs,
+        side: board.side,
+        deceased: victim.id,
+        deceasedName: victim.identity.name,
+        survivorsLeft: aliveCount,
+        strategy: board.strategy,
+      });
+    }
   });
 }
 
@@ -126,6 +138,17 @@ function handleCallout(c: Callout, bb: TeamBlackboard, ctx: CoordinatorContext):
       role: bb.roleByBot.get(pick.id) ?? 'ct_rotator',
     });
     setBotObjective(pick, tx, tz);
+    if (debugLog.isEnabled('squad')) {
+      debugLog.squad('rotate', {
+        t: c.tEmitMs,
+        side: bb.side,
+        cleared,
+        rotatedId: pick.id,
+        rotatedName: pick.identity.name,
+        toSite: otherSite,
+        triggeredBy: c.emitterId,
+      });
+    }
   }
 }
 
