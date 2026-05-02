@@ -42,7 +42,23 @@ export interface EventMap {
     damage: number;
     headshot: boolean;
     killing: boolean;
+    /** True when the bullet struck an already-dead body. The damage
+     *  applied is 0, no kill credit, but visuals still fire the
+     *  full gore stack (gibs + blood) so corpses can be mutilated. */
+    corpseHit: boolean;
+    /** When set, this hit pushed the cumulative per-side limb damage
+     *  past the detach threshold — the limb tears off mid-fight even
+     *  on a non-killing shot. Includes which side (left/right) so
+     *  the visual dismemberment picks the correct piece. The victim
+     *  keeps fighting (slower / less accurate). */
+    limbDetached: { kind: 'leg' | 'arm'; side: 'left' | 'right' } | null;
     hitX: number; hitY: number; hitZ: number;
+    /** Victim's foot Y at the time of impact — used by blood-decal
+     *  visuals to drop a pool on the surface they're standing on. */
+    victimFootY: number;
+    /** Direction the bullet was traveling when it hit (unit vector).
+     *  Used to offset blood spray away from the shooter. */
+    dirX: number; dirY: number; dirZ: number;
     distance: number;
     tMs: number;
   };
@@ -55,6 +71,16 @@ export interface EventMap {
   };
   'combat:reload': { shooterId: string; weapon: string; tMs: number };
   'combat:weaponSwitch': { shooterId: string; weapon: string; tMs: number };
+  /** A character took a running step. Walking (Shift) and crouching are
+   *  silent — those characters never emit this event. Audio plays the
+   *  surface-specific clip; perception lets bots hear an enemy through
+   *  walls. `surface` matches the box collider's surface tag. */
+  'character:footstep': {
+    id: string;
+    x: number; y: number; z: number;
+    surface: 'sand' | 'wood' | 'metal' | 'concrete' | 'stone';
+    tMs: number;
+  };
   'grenade:thrown': {
     grenadeId: number;
     kind: 'he' | 'flashbang' | 'smoke' | 'molotov' | 'decoy';

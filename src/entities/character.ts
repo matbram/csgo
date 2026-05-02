@@ -37,6 +37,23 @@ export interface Character {
    *  values mean "not flashed". Both the local player overlay and the
    *  bot perception flash-degrade hook off this. */
   flashedUntilMs?: number;
+
+  /** Cumulative HP damage taken on each individual limb. Once one
+   *  side passes LIMB_DETACH_THRESHOLD the limb tears off — even on
+   *  a non-killing shot. Tracking per side means an attacker can
+   *  shoot the right leg twice and rip it off without affecting
+   *  the left, instead of pooling all leg damage into one bucket. */
+  leftLegDamage: number;
+  rightLegDamage: number;
+  leftArmDamage: number;
+  rightArmDamage: number;
+  /** True after the matching limb is permanently detached for the
+   *  rest of the round. Reset by resetCharacterForRound. Movement
+   *  and aim impairment read these. */
+  leftLegDetached: boolean;
+  rightLegDetached: boolean;
+  leftArmDetached: boolean;
+  rightArmDetached: boolean;
 }
 
 export function hitboxPose(c: Character): HitboxPose {
@@ -44,6 +61,7 @@ export function hitboxPose(c: Character): HitboxPose {
     baseX: c.pos.x,
     baseY: c.pos.y,
     baseZ: c.pos.z,
+    yaw: c.yaw,
     eye: c.currentEye,
     height: c.currentHeight,
   };

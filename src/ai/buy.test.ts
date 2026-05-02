@@ -26,6 +26,10 @@ function makeChar(side: 'T' | 'CT'): Character {
     hp: 100, armor: 0, helmet: false, hasKit: false, alive: true,
     inventory: defaultInventory(side),
     speed: 0, inAir: false, crouching: false,
+    leftLegDamage: 0, rightLegDamage: 0,
+    leftArmDamage: 0, rightArmDamage: 0,
+    leftLegDetached: false, rightLegDetached: false,
+    leftArmDetached: false, rightArmDetached: false,
   };
 }
 

@@ -37,18 +37,23 @@ export class ScopeHud {
 
   /** Drive the overlay from the active weapon's scope state. Pass 0 when
    *  the player is dead, the buy menu is open, or there's no scoped
-   *  weapon — i.e. the *effective* level. */
-  setLevel(level: number): void {
-    if (level === this.currentLevel) return;
-    this.currentLevel = level;
-    if (level <= 0) {
+   *  weapon — i.e. the *effective* level. The `style` arg controls
+   *  whether to draw the heavy AWP-style black bars: ADS-style scopes
+   *  (rifles, pistols) just adjust FOV with no overlay so the player
+   *  keeps full peripheral vision down the sights. */
+  setLevel(level: number, style: 'sniper' | 'ads' = 'sniper'): void {
+    const wantOverlay = level > 0 && style === 'sniper';
+    const targetLevel = wantOverlay ? level : 0;
+    if (targetLevel === this.currentLevel) return;
+    this.currentLevel = targetLevel;
+    if (targetLevel <= 0) {
       this.root.classList.add('hidden');
       if (this.crosshair) this.crosshair.classList.remove('hidden');
     } else {
       this.root.classList.remove('hidden');
       // Tint differently per zoom level so the player can tell them apart.
-      this.root.classList.toggle('scope-zoom-2', level >= 2);
-      this.levelEl.textContent = level >= 2 ? 'ZOOM II' : 'ZOOM I';
+      this.root.classList.toggle('scope-zoom-2', targetLevel >= 2);
+      this.levelEl.textContent = targetLevel >= 2 ? 'ZOOM II' : 'ZOOM I';
       if (this.crosshair) this.crosshair.classList.add('hidden');
     }
   }

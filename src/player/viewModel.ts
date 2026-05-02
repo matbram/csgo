@@ -201,6 +201,12 @@ export class ViewModel {
   private isReloading = false;
   /** Whether the view model meshes should currently be rendered. */
   private visible = true;
+  /** ADS target (0 = hipfire, 1 = aiming down sights). Driven by the
+   *  caller via `setAds(true|false)`. */
+  private adsTarget = 0;
+  /** ADS animation progress, 0..1. Smoothed toward `adsTarget` so the
+   *  raise/lower has a quick but visible tween. */
+  private adsProgress = 0;
   /** Melee swing tween (0..1). 1 means no swing in progress; advances to 1
    *  over the duration appropriate for the current `swingKind`. */
   private swingT = 1;
@@ -245,6 +251,14 @@ export class ViewModel {
 
   setReloading(active: boolean): void {
     this.isReloading = active;
+  }
+
+  /** Toggle aim-down-sights pose. While active, the gun is animated
+   *  toward a centered, slightly raised pose so the iron sights / scope
+   *  rail line up with the crosshair — the visual analogue of pulling
+   *  the gun up to the eye, not just zooming the FOV. */
+  setAds(active: boolean): void {
+    this.adsTarget = active ? 1 : 0;
   }
 
   /** Kick off a melee swing tween. `kind` selects slash (LMB, alternates
@@ -316,10 +330,24 @@ export class ViewModel {
       ? stabCurve(this.swingT)
       : swingCurve(this.swingT, this.swingDir);
 
+    // ADS pose: keep the gun close to the camera (it reads as "in the
+    // hands" rather than at arm's length) but lift it only part-way so
+    // the camera ends up *above* the barrel — the player looks down the
+    // sights toward the crosshair instead of having the slide top sit
+    // on it. Cancelling the default right-shift (-0.18 on x) centres
+    // the gun; +0.06 on y leaves the slide top ~12 cm below the
+    // crosshair line so the area at and above the crosshair stays
+    // clear of the gun's silhouette. +0.06 z is a small forward nudge
+    // so the rear iron sight clears the camera's near plane.
+    this.adsProgress = expSmooth(this.adsProgress, this.adsTarget, 80, dtMs);
+    const adsX = -0.18 * this.adsProgress;
+    const adsY =  0.06 * this.adsProgress;
+    const adsZ =  0.06 * this.adsProgress;
+
     const base = this.hand.position;
-    base.x = 0.18 + bobX + this.smoothedKickX * 0.04 + swing.posX;
-    base.y = -0.18 + bobY + reloadOffsetY - this.smoothedKickY * 0.012 + swing.posY;
-    base.z = 0.32 - this.smoothedKickZ * 0.18 + swing.posZ;
+    base.x = 0.18 + bobX + this.smoothedKickX * 0.04 + swing.posX + adsX;
+    base.y = -0.18 + bobY + reloadOffsetY - this.smoothedKickY * 0.012 + swing.posY + adsY;
+    base.z = 0.32 - this.smoothedKickZ * 0.18 + swing.posZ + adsZ;
     this.hand.rotation.x = this.smoothedRotX + swing.rotX;
     this.hand.rotation.y = this.smoothedRotY + swing.rotY;
     this.hand.rotation.z = reloadRotZ + swing.rotZ;

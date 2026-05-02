@@ -9,6 +9,13 @@
  *       speed, inAir, crouching).
  *
  *  The view model is a separate concern (player/viewModel.ts).
+ *
+ *  The active `character` and `controller` references are mutable: when
+ *  the player dies and takes over a teammate bot, both flip to the bot's
+ *  records so input/movement/combat keep working without code that walks
+ *  these fields needing to know who's behind the wheel. The originals are
+ *  preserved on `ownCharacter` / `ownController` so we can restore them
+ *  when the round resets.
  */
 
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
@@ -17,11 +24,23 @@ import type { Character } from '../entities/character';
 import { defaultInventory } from '../weapons/inventory';
 
 export class LocalPlayer {
-  readonly character: Character;
-  readonly controller: CharacterController;
+  /** Currently-active character. Defaults to the player's own; flips to
+   *  a bot's character record while possessing it. */
+  character: Character;
+  /** Currently-active kinematic controller. Same swap rule as above. */
+  controller: CharacterController;
+  /** The player's own character (id='local'). Stable across possessions. */
+  readonly ownCharacter: Character;
+  /** The player's own controller. Stable across possessions. */
+  readonly ownController: CharacterController;
+  /** Id of the bot we're currently possessing, or null when driving our
+   *  own body. The main loop reads this to skip the possessed bot's AI
+   *  tick (otherwise the brain would fight the player's input). */
+  possessedBotId: string | null = null;
 
   constructor(controller: CharacterController, team: 'T' | 'CT') {
     this.controller = controller;
+    this.ownController = controller;
     const inv = defaultInventory(team);
     this.character = {
       id: 'local',
@@ -41,7 +60,12 @@ export class LocalPlayer {
       speed: 0,
       inAir: false,
       crouching: false,
+      leftLegDamage: 0, rightLegDamage: 0,
+      leftArmDamage: 0, rightArmDamage: 0,
+      leftLegDetached: false, rightLegDetached: false,
+      leftArmDetached: false, rightArmDetached: false,
     };
+    this.ownCharacter = this.character;
     this.syncFromController();
   }
 
@@ -57,5 +81,24 @@ export class LocalPlayer {
     c.crouching = s.crouching || s.forcedCrouch;
     c.inAir = !s.onGround;
     c.speed = s.speed;
+  }
+
+  /** Take over a teammate bot. The bot's character + controller become
+   *  the active pair, so combat / camera / view-model code that reads
+   *  `localPlayer.character` and `localPlayer.controller` automatically
+   *  follows the new body. Caller is responsible for disabling the bot's
+   *  AI tick (otherwise the brain will overwrite yaw/pitch each frame). */
+  possess(bot: { id: string; character: Character; controller: CharacterController }): void {
+    this.character = bot.character;
+    this.controller = bot.controller;
+    this.possessedBotId = bot.id;
+  }
+
+  /** Release any active possession and restore our own character +
+   *  controller. Call on round reset / respawn. */
+  releasePossession(): void {
+    this.character = this.ownCharacter;
+    this.controller = this.ownController;
+    this.possessedBotId = null;
   }
 }

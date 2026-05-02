@@ -28,7 +28,12 @@ import {
 
 export type RoundPhase = 'freeze' | 'live' | 'end';
 
-export const FREEZE_TIME_MS = 15_000;
+// Per-round freeze before the live phase begins. The bots are pinned at
+// spawn for this duration so the strategist's plan and buy logic can land
+// before anyone moves. Kept short (~6 s) so it's obvious the round has
+// started and teammates are heading out — long freezes felt like the bots
+// were stuck.
+export const FREEZE_TIME_MS = 6_000;
 export const ROUND_TIME_MS = 115_000;       // 1:55
 export const ROUND_END_DELAY_MS = 5000;
 export const BUY_TIME_AFTER_FREEZE_MS = 20_000; // first 20s of live still allow buying

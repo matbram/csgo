@@ -12,9 +12,9 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Character } from './character';
 import { CharacterController, DEFAULT_TUNABLES } from '../player/controller';
 import type { WorldQuery } from '../player/physics';
-import { defaultInventory } from '../weapons/inventory';
+import { defaultInventory, activeInstance } from '../weapons/inventory';
 import {
-  createHumanoid, syncHumanoidPose, disposeHumanoid,
+  createHumanoid, syncHumanoidPose, disposeHumanoid, setHumanoidWeapon,
   type HumanoidParts,
 } from './humanoid';
 import type { PathPoint } from '../nav/astar';
@@ -22,6 +22,7 @@ import type { PathService } from '../nav/pathService';
 import { Perception } from '../ai/perception';
 import { Brain } from '../ai/brain';
 import { getDifficulty, withVariance, type DifficultyId } from '../ai/difficulty';
+import { debugLog } from '../engine/debugLog';
 
 /** Distance to a waypoint at which we consider it reached and advance to
  *  the next one. A bit larger than a cell so bots don't hover on each
@@ -49,6 +50,11 @@ export interface Bot {
    *  been promoted to "active" yet. */
   perception: Perception;
   brain: Brain;
+  /** When true the main loop skips this bot's AI tick (perception, brain,
+   *  stepBot). Set while the local player is possessing this bot after
+   *  death — otherwise the brain would overwrite the player's mouse aim
+   *  and movement input every frame. */
+  aiDisabled: boolean;
 }
 
 let nextBotId = 1;
@@ -91,6 +97,10 @@ export function createBot(
     speed: 0,
     inAir: false,
     crouching: false,
+    leftLegDamage: 0, rightLegDamage: 0,
+    leftArmDamage: 0, rightArmDamage: 0,
+    leftLegDetached: false, rightLegDetached: false,
+    leftArmDetached: false, rightArmDetached: false,
   };
   syncHumanoidPose(parts, character.pos.x, character.pos.y, character.pos.z, character.yaw, character.currentEye, character.currentHeight);
 
@@ -113,12 +123,15 @@ export function createBot(
     nextPlanAfterMs: 0,
     perception,
     brain,
+    aiDisabled: false,
   };
 }
 
 /** Sync the controller's spawn from the character record (which the
  *  match's roster reset writes to). Call after `resetCharacterForRound`
- *  and before stepping the bot for the new round. */
+ *  and before stepping the bot for the new round. Also re-enables any
+ *  humanoid part that was hidden by a dismemberment kill last round —
+ *  otherwise a respawned bot would be missing a head. */
 export function snapBotToCharacterPose(bot: Bot): void {
   const s = bot.controller.state;
   s.pos.copyFrom(bot.character.pos);
@@ -130,6 +143,23 @@ export function snapBotToCharacterPose(bot: Bot): void {
   bot.pathIdx = 0;
   bot.objective = null;
   bot.nextPlanAfterMs = 0;
+  // Re-enable every detachable part — any limb torn off last round
+  // gets put back so the respawned bot isn't missing pieces.
+  const p = bot.parts;
+  p.head.setEnabled(true);
+  p.torso.setEnabled(true);
+  p.pelvis.setEnabled(true);
+  p.leftUpperArm.setEnabled(true);
+  p.leftForearm.setEnabled(true);
+  p.rightUpperArm.setEnabled(true);
+  p.rightForearm.setEnabled(true);
+  p.leftThigh.setEnabled(true);
+  p.leftShin.setEnabled(true);
+  p.leftFoot.setEnabled(true);
+  p.rightThigh.setEnabled(true);
+  p.rightShin.setEnabled(true);
+  p.rightFoot.setEnabled(true);
+  for (const g of p.gear) g.setEnabled(true);
 }
 
 /** Set a new objective and clear any in-flight path. The next sim tick
@@ -175,9 +205,25 @@ export function stepBot(
     if (result && result.length > 0) {
       bot.path = result;
       bot.pathIdx = 0;
+      if (debugLog.isEnabled('bots')) {
+        debugLog.bots('path ok', {
+          t: nowMs, id: bot.id,
+          start, goal: bot.objective, len: result.length,
+        });
+      }
     } else if (hadBudget) {
       bot.nextPlanAfterMs = nowMs + PATH_RETRY_MS;
+      if (debugLog.isEnabled('bots')) {
+        debugLog.bots('path FAIL', {
+          t: nowMs, id: bot.id,
+          start, goal: bot.objective,
+          backoffMs: PATH_RETRY_MS,
+          reason: 'unreachable or unsnappable',
+        });
+      }
     }
+    // Note: budget-exhausted skips are silent — they happen every frame
+    // until the path service catches up and would dwarf the buffer.
   }
 
   // Compute wishDir toward the current waypoint, unless the caller has
@@ -242,13 +288,23 @@ export function stepBot(
 
 function activeMoveSpeedScale(bot: Bot): number {
   const inv = bot.character.inventory!;
+  let scale: number;
   switch (inv.active) {
-    case 'primary':   return inv.primary?.def.moveSpeedScale ?? 1;
-    case 'secondary': return inv.secondary?.def.moveSpeedScale ?? 1;
-    case 'knife':     return inv.knife.def.moveSpeedScale;
-    case 'c4':        return inv.c4?.def.moveSpeedScale ?? 1;
-    case 'grenade':   return inv.grenades[inv.activeGrenadeIdx]?.def.moveSpeedScale ?? 1;
+    case 'primary':   scale = inv.primary?.def.moveSpeedScale ?? 1; break;
+    case 'secondary': scale = inv.secondary?.def.moveSpeedScale ?? 1; break;
+    case 'knife':     scale = inv.knife.def.moveSpeedScale; break;
+    case 'c4':        scale = inv.c4?.def.moveSpeedScale ?? 1; break;
+    case 'grenade':   scale = inv.grenades[inv.activeGrenadeIdx]?.def.moveSpeedScale ?? 1; break;
   }
+  // Limping bot. One leg gone → half-speed; both legs gone → crawl.
+  // The brain still pathfinds normally — it just makes much slower
+  // progress. A leg-amputated bot is effectively easy meat.
+  const legsGone =
+    (bot.character.leftLegDetached ? 1 : 0)
+    + (bot.character.rightLegDetached ? 1 : 0);
+  if (legsGone === 1) scale *= 0.50;
+  else if (legsGone >= 2) scale *= 0.18;
+  return scale;
 }
 
 /** Exponentially smooth yaw toward the desired heading along the shortest
@@ -261,16 +317,49 @@ function smoothYaw(current: number, target: number, dtMs: number): number {
   return current + diff * k;
 }
 
-/** Per render-frame: position + orient the humanoid mesh. Tipped-over
- *  pose for dead bots — same look as the legacy dummies. */
+/** Per render-frame: position + orient the humanoid mesh, and sync
+ *  the visible weapon to whatever the bot currently has equipped.
+ *  Tipped-over pose for dead bots; crawling pitch when both legs are
+ *  blown off. */
 export function syncBotMesh(bot: Bot): void {
   const c = bot.character;
   if (!c.alive) {
     bot.parts.root.rotation.x = -Math.PI / 2.2;
+    bot.parts.root.rotation.z = 0;
     bot.parts.root.position.set(c.pos.x, c.pos.y + 0.2, c.pos.z);
     return;
   }
   syncHumanoidPose(bot.parts, c.pos.x, c.pos.y, c.pos.z, c.yaw, c.currentEye, c.currentHeight);
+  // Both legs gone → tip the torso forward so the body looks like
+  // it's dragging itself along the ground. One leg gone → small
+  // limp tilt so the bot reads as wounded instead of standing
+  // straight on a missing limb.
+  const legsGone =
+    (c.leftLegDetached ? 1 : 0) + (c.rightLegDetached ? 1 : 0);
+  if (legsGone >= 2) {
+    bot.parts.root.rotation.x = -Math.PI / 2.4;
+    bot.parts.root.position.y = c.pos.y + 0.20;
+  } else if (legsGone === 1) {
+    // Lean toward the missing side so the silhouette obviously limps.
+    const lean = c.leftLegDetached ? 0.25 : -0.25;
+    bot.parts.root.rotation.z = lean;
+  }
+
+  // Pick a category for the weapon visual based on the active slot.
+  // setHumanoidWeapon is idempotent on category, so calling it every
+  // frame only allocates when the bot actually swaps weapons.
+  let category: 'rifle' | 'pistol' | 'sniper' | 'knife' | 'grenade' | null = null;
+  if (c.inventory) {
+    const inst = activeInstance(c.inventory);
+    const cat = inst.def.category;
+    if (cat === 'rifle' || cat === 'smg' || cat === 'lmg' || cat === 'shotgun') category = 'rifle';
+    else if (cat === 'pistol') category = 'pistol';
+    else if (cat === 'sniper') category = 'sniper';
+    else if (cat === 'knife') category = 'knife';
+    else if (cat === 'grenade') category = 'grenade';
+    else category = null;     // bomb / nothing visible
+  }
+  setHumanoidWeapon(bot.parts, category);
 }
 
 export function disposeBot(bot: Bot): void {

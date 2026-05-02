@@ -22,6 +22,7 @@ import { input } from './engine/input';
 import { loop } from './engine/loop';
 import { time } from './engine/time';
 import { events } from './engine/events';
+import { debugLog } from './engine/debugLog';
 import { buildMap } from './map/builder';
 import { dust2 } from './map/dust2';
 import { CharacterController, DEFAULT_TUNABLES } from './player/controller';
@@ -66,6 +67,13 @@ import { C4Entity } from './entities/c4';
 import { BombHud } from './hud/bombHud';
 import { purchaseWeapon, purchaseArmor, purchaseKit } from './match/purchase';
 import type { Side } from './match/economy';
+
+/** Camera-local forward axis. Babylon's `getDirectionToRef` transforms
+ *  this through the camera's world matrix, giving us the exact view ray
+ *  the player sees down the crosshair. We allocate it once and reuse it
+ *  to avoid per-shot garbage. */
+const BABYLON_FORWARD = new Vector3(0, 0, 1);
+const camForward = new Vector3(0, 0, 0);
 
 function bootstrap(): void {
   const canvas = document.getElementById('render-canvas');
@@ -116,7 +124,15 @@ function bootstrap(): void {
   const combatSystem = new CombatSystem(query, () => characters, grenadeSystem.smoke);
   const firing = new FiringController(combatSystem);
   installAudio();
-  installCombatVisuals();
+  // Pass the world query (for wall-blood ray casts) and a humanoid
+  // lookup (so the visuals layer can rip a body part off the bot that
+  // just died) into the combat visuals install. The local player has
+  // no humanoid mesh — `partsForId('local')` returns null and the
+  // dismemberment step silently skips for them.
+  installCombatVisuals({
+    worldQuery: query,
+    partsForId: (id) => bots.find(b => b.id === id)?.parts ?? null,
+  });
   installGrenadeVisuals(grenadeSystem);
 
   // 6.5) Nav grid + path service. Built once at boot — Dust 2 is static
@@ -215,6 +231,9 @@ function bootstrap(): void {
   // Round-end → next round transition handled in sim loop.
   let roundEndApplied = false;
   let lastRoundNumber = 0;
+  // Per-bot transition tracking for the 'bots' debug channel — log a
+  // single line on transitions in/out of "stuck", not every frame.
+  const wasStuck = new Set<string>();
   // Sim ms when the current round entered live phase (post-freeze).
   // Used by the bot brain's grenade-lineup trigger windows.
   let liveStartedAtMs = 0;
@@ -229,6 +248,15 @@ function bootstrap(): void {
       atk.killWeapons.push(weapon as never);
     }
     if (vic) vic.deaths += 1;
+    // If the possessed bot just died, drop possession so the player
+    // re-enters spectator mode and can pick a different teammate to
+    // take over (rather than getting stuck inside a corpse).
+    if (localPlayer.possessedBotId && localPlayer.possessedBotId === victimId) {
+      const possessed = bots.find(b => b.id === localPlayer.possessedBotId);
+      if (possessed) possessed.aiDisabled = false;
+      localPlayer.releasePossession();
+      fps.bindController(localPlayer.controller);
+    }
   });
 
   // Bomb plant → both strategists re-plan: T defends the planted site,
@@ -260,6 +288,25 @@ function bootstrap(): void {
     }
   });
 
+  // Footstep perception: enemy bots hear running steps within a
+  // shorter range than gunfire. Footsteps degrade to 'sound'
+  // confidence in perception — the bot turns to face the noise but
+  // won't blind-fire through walls. Same-team steps are ignored so a
+  // friendly running past doesn't drag attention onto a teammate.
+  const FOOTSTEP_HEARING_M = 22;
+  events.on('character:footstep', ({ id, x, y, z, tMs }) => {
+    const stepper = characters.find(c => c.id === id);
+    if (!stepper) return;
+    for (const bot of bots) {
+      if (!bot.character.alive) continue;
+      if (bot.character.team === stepper.team) continue;
+      const dx = bot.character.pos.x - x;
+      const dz = bot.character.pos.z - z;
+      if (dx * dx + dz * dz > FOOTSTEP_HEARING_M * FOOTSTEP_HEARING_M) continue;
+      bot.perception.reportSound(id, x, y, z, tMs);
+    }
+  });
+
   // 9) Input
   canvas.addEventListener('click', () => ensureAudioContext());
   input.attach(canvas);
@@ -273,6 +320,15 @@ function bootstrap(): void {
     // Drop any in-flight grenades / smokes / fire patches from the
     // previous round — none of that should bleed into the new round.
     grenadeSystem.reset();
+    // The local player respawns in their own body next round, so release
+    // any active possession before we reset bot state. The previously-
+    // possessed bot regains its AI for the new round.
+    if (localPlayer.possessedBotId) {
+      const possessed = bots.find(b => b.id === localPlayer.possessedBotId);
+      if (possessed) possessed.aiDisabled = false;
+      localPlayer.releasePossession();
+      fps.bindController(localPlayer.controller);
+    }
     const tBots: Bot[] = [];
     const ctBots: Bot[] = [];
     for (const bot of bots) {
@@ -296,6 +352,27 @@ function bootstrap(): void {
     planRoundStart(ctBoard, ctBots, match.players, world, navGrid, round, time.simMs);
     applyBlackboardObjectives(tBoard, tBots);
     applyBlackboardObjectives(ctBoard, ctBots);
+    debugLog.round('refreshBots', {
+      t: time.simMs,
+      round,
+      tStrat: tBoard.strategy,
+      ctStrat: ctBoard.strategy,
+      tWithObj: tBots.filter(b => b.objective !== null).length + '/' + tBots.length,
+      ctWithObj: ctBots.filter(b => b.objective !== null).length + '/' + ctBots.length,
+    });
+    // Per-bot one-liners so the team's full assignment is visible
+    // without 9 nested objects in a single dump.
+    if (debugLog.isEnabled('round')) {
+      for (const b of [...tBots, ...ctBots]) {
+        debugLog.round('  bot', {
+          t: time.simMs,
+          id: b.id,
+          team: b.character.team,
+          obj: b.objective ?? '-',
+          pos: { x: b.character.pos.x, z: b.character.pos.z },
+        });
+      }
+    }
   };
 
   const applyBlackboardObjectives = (
@@ -386,22 +463,80 @@ function bootstrap(): void {
     return out;
   };
 
-  // First round. Reset everyone first so beginRound's carrier pick sees
-  // alive characters; then begin the round; then assign the C4 to the carrier.
-  resetRoster(characters, localPlayer, world, match, snapshotSurvivors(/* alwaysIncludeLocal */ true));
-  match = beginRound(match, time.simMs, characters);
-  if (match.round?.bomb?.carrierId) {
-    assignBomb(characters, match.round.bomb.carrierId);
-  }
-  refreshBotsForNewRound();
-  if (match.round) {
-    events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
-    lastRoundNumber = match.round.number;
-  }
+  // Defer the very first round until the user actually clicks "Play"
+  // and acquires pointer lock. The render loop is already engaged by
+  // Babylon, so the freeze timer would otherwise tick down silently
+  // while the start overlay is still on screen — by the time the user
+  // clicked through, freeze had ended and bots had already pathed to
+  // their callouts, making it look like both teams were frozen on the
+  // map. Holding off the begin call keeps the round phase 'pre' (bots
+  // and player both stationary) until input is live.
+  let firstRoundStarted = false;
+  const startFirstRound = (): void => {
+    if (firstRoundStarted) return;
+    firstRoundStarted = true;
+    debugLog.round('startFirstRound', { simMs: time.simMs });
+    // Reset everyone first so beginRound's carrier pick sees alive
+    // characters; then begin the round; then assign the C4 to the
+    // carrier. We use the current simMs so the freeze window starts
+    // counting from "right now", not from 0.
+    resetRoster(characters, localPlayer, world, match, snapshotSurvivors(/* alwaysIncludeLocal */ true));
+    match = beginRound(match, time.simMs, characters);
+    if (match.round?.bomb?.carrierId) {
+      assignBomb(characters, match.round.bomb.carrierId);
+    }
+    refreshBotsForNewRound();
+    if (match.round) {
+      events.emit('match:roundStart', { number: match.round.number, tMs: time.simMs });
+      lastRoundNumber = match.round.number;
+    }
+  };
+  // Kick off the round on the first pointer-lock acquisition. Subsequent
+  // lock events (e.g. after a buy menu / settings dialog) are ignored —
+  // by then the match is already running.
+  events.on('input:pointerLockChanged', ({ locked }) => {
+    if (locked) startFirstRound();
+  });
+
+  // Footstep emission. We track a per-character distance accumulator
+  // and emit one event each time it exceeds STRIDE_M, but only while
+  // the character is running on solid ground (Shift-walk and crouch
+  // are intentionally silent so players can flank). Crouch-only
+  // characters never reach the speed threshold either; the explicit
+  // walking flag covers the player. Bots never set `walking`, so they
+  // make footsteps whenever they're on the move.
+  const STRIDE_M = 1.6;
+  const RUN_SPEED_THRESHOLD = 2.5;     // m/s — above walk pace
+  const stepAccum = new Map<string, number>();
+  const tickFootstep = (
+    id: string,
+    state: { onGround: boolean; crouching: boolean; forcedCrouch?: boolean; walking: boolean; speed: number; groundSurface: 'sand' | 'wood' | 'metal' | 'concrete' | 'stone' },
+    dtMs: number,
+    pos: { x: number; y: number; z: number },
+  ): void => {
+    if (!state.onGround || state.crouching || state.walking || state.speed < RUN_SPEED_THRESHOLD) {
+      stepAccum.set(id, 0);
+      return;
+    }
+    let acc = stepAccum.get(id) ?? 0;
+    acc += state.speed * (dtMs / 1000);
+    if (acc >= STRIDE_M) {
+      acc -= STRIDE_M;
+      events.emit('character:footstep', {
+        id, x: pos.x, y: pos.y, z: pos.z,
+        surface: state.groundSurface,
+        tMs: time.simMs,
+      });
+    }
+    stepAccum.set(id, acc);
+  };
 
   // ---- Sim systems ----
   loop.registerSim((dtMs) => {
     const nowMs = time.simMs + dtMs; // step time updates AFTER sim systems run, so use computed
+    // Resolve the active controller this tick — flips to a possessed
+    // bot's controller while the player is dead and driving a teammate.
+    const ctrl = localPlayer.controller;
     pathService.beginFrame();
     fps.applyMouseLook();
 
@@ -420,19 +555,28 @@ function bootstrap(): void {
       if (input.isDown('KeyD')) strafe += 1;
       if (input.isDown('KeyA')) strafe -= 1;
     }
-    const yaw = controller.state.yaw;
+    const yaw = ctrl.state.yaw;
     const fX = Math.sin(yaw), fZ = Math.cos(yaw);
     const rX = Math.cos(yaw), rZ = -Math.sin(yaw);
 
     const inst = currentInstance(localPlayer);
-    const speedScale = (inst && inst.scopeLevel > 0 && inst.def.scopedMoveSpeedScale !== undefined)
+    let speedScale = (inst && inst.scopeLevel > 0 && inst.def.scopedMoveSpeedScale !== undefined)
       ? inst.def.scopedMoveSpeedScale
       : (inst?.def.moveSpeedScale ?? 1.0);
+    // Lost-leg impairment. One leg gone → half-speed limp; both
+    // legs gone → ~crawling, fast enough to crab-shuffle out of an
+    // exposed angle but you're not winning a foot race. Stacks
+    // multiplicatively with the weapon-driven scale.
+    const legsGone =
+      (localPlayer.character.leftLegDetached ? 1 : 0)
+      + (localPlayer.character.rightLegDetached ? 1 : 0);
+    if (legsGone === 1) speedScale *= 0.50;
+    else if (legsGone >= 2) speedScale *= 0.18;
     const wishX = fX * forward + rX * strafe;
     const wishZ = fZ * forward + rZ * strafe;
 
     const movementLocked = isMovementLocked(match.round);
-    controller.step(dtMs, {
+    ctrl.step(dtMs, {
       wishX: movementLocked ? 0 : wishX,
       wishZ: movementLocked ? 0 : wishZ,
       jump: !movementLocked && input.isDown('Space'),
@@ -441,6 +585,7 @@ function bootstrap(): void {
       speedScale,
     });
     localPlayer.syncFromController();
+    tickFootstep('local', ctrl.state, dtMs, localPlayer.character.pos);
 
     // Buy menu toggling — only if buy phase + in buy zone.
     const slot = match.players.get('local');
@@ -528,6 +673,29 @@ function bootstrap(): void {
     if (!localPlayer.character.alive && input.pointerLocked && !buyMenu.isOpen()) {
       if (input.wasMousePressed(0)) spectator.next();
       if (input.wasMousePressed(2)) spectator.prev();
+      // F takes over the currently-spectated teammate. The spectator's
+      // `currentTarget()` is refreshed each render frame against the
+      // alive roster, so this picks the bot the camera is already
+      // following. We don't allow re-possessing — once the player is
+      // controlling a bot they're "alive" in that bot's body.
+      if (input.wasPressed('KeyF')) {
+        const target = spectator.currentTarget();
+        if (target && target.character.alive && !target.aiDisabled) {
+          target.aiDisabled = true;
+          // Wipe any stale brain/path state so the bot doesn't keep
+          // chasing its old objective once we release possession later.
+          target.brain.state = 'idle';
+          target.path = null;
+          target.pathIdx = 0;
+          localPlayer.possess(target);
+          fps.bindController(target.controller);
+          if (target.character.inventory) {
+            viewModel.setWeapon(activeInstance(target.character.inventory));
+          }
+          // Keep the input layer locked so WASD/mouse start driving the
+          // new body immediately on the next sim tick.
+        }
+      }
     }
     if (!localPlayer.character.alive && inst && inst.scopeLevel > 0) {
       inst.scopeLevel = 0;
@@ -543,14 +711,20 @@ function bootstrap(): void {
       localPlayer.character.alive &&
       activeInst.def.slot !== 'c4'
     ) {
-      const eyeX = controller.state.pos.x;
-      const eyeY = controller.state.pos.y + controller.state.currentEye;
-      const eyeZ = controller.state.pos.z;
-      const py = controller.state.pitch;
-      const cosP = Math.cos(py);
-      const fwdX = Math.sin(yaw) * cosP;
-      const fwdY = Math.sin(py);
-      const fwdZ = Math.cos(yaw) * cosP;
+      // Fire from the camera's actual world position + forward vector
+      // so the bullet path is exactly the player's view ray. Reading
+      // ctrl.state.pos / pitch / yaw and reconstructing fwd works in
+      // most cases but can drift from what the camera actually shows
+      // (FOV lerp during scope, bob offsets, etc.) — using the camera
+      // pose guarantees crosshair-aligned shots.
+      const fwdRef = camForward;
+      fps.camera.getDirectionToRef(BABYLON_FORWARD, fwdRef);
+      const eyeX = fps.camera.position.x;
+      const eyeY = fps.camera.position.y;
+      const eyeZ = fps.camera.position.z;
+      const fwdX = fwdRef.x;
+      const fwdY = fwdRef.y;
+      const fwdZ = fwdRef.z;
 
       // Grenades are thrown, not hitscan-fired. LMB = full throw, RMB =
       // underhand. After a successful throw the consumed instance is
@@ -613,6 +787,18 @@ function bootstrap(): void {
     const curPhase = match.round?.phase ?? null;
     if (curPhase === 'live' && lastSeenPhase !== 'live') {
       liveStartedAtMs = time.simMs;
+      debugLog.round('phase.freeze→live', {
+        round: match.round?.number,
+        simMs: time.simMs,
+        botsAlive: bots.filter(b => b.character.alive).length,
+        botsWithObjective: bots.filter(b => b.objective !== null).length,
+      });
+    }
+    if (curPhase !== lastSeenPhase) {
+      debugLog.round('phase.transition', {
+        from: lastSeenPhase, to: curPhase,
+        round: match.round?.number, simMs: time.simMs,
+      });
     }
     lastSeenPhase = curPhase;
 
@@ -635,6 +821,13 @@ function bootstrap(): void {
 
       for (const bot of bots) {
         if (!bot.character.alive) continue;
+        // Skip the AI tick entirely while the local player is in this
+        // body — the loop below feeds the bot's controller from input
+        // (via localPlayer.controller) and the brain would otherwise
+        // overwrite yaw/pitch and try to drive movement.
+        if (bot.aiDisabled) continue;
+        const prevState = bot.brain.state;
+        const prevSpeed = bot.character.speed;
         bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
         const isT = bot.character.team === 'T';
         const board = isT ? tBoard : ctBoard;
@@ -663,12 +856,45 @@ function bootstrap(): void {
           // While engaging the brain owns yaw; let it through unmodified.
           faceMovement: decision.followPath,
         });
+        tickFootstep(bot.id, bot.controller.state, dtMs, bot.character.pos);
+        // Per-bot trace, gated on the 'bots' channel. We log only on
+        // transitions: a brain state change, OR the moment a bot
+        // crosses into / out of "stuck" (followPath but ~0 speed for
+        // two ticks while an objective is set). Continuous spam from a
+        // bot anchored at its callout would otherwise bury the buffer.
+        if (debugLog.isEnabled('bots')) {
+          const stateChanged = prevState !== bot.brain.state;
+          const isStuck = decision.followPath
+            && bot.character.speed < 0.1
+            && prevSpeed < 0.1
+            && bot.objective !== null;
+          const stuckEdge = isStuck !== wasStuck.has(bot.id);
+          if (stateChanged || stuckEdge) {
+            if (isStuck) wasStuck.add(bot.id);
+            else wasStuck.delete(bot.id);
+            debugLog.bots(
+              stateChanged ? `state ${prevState}→${bot.brain.state}` :
+                isStuck ? 'stuck' : 'unstuck',
+              {
+                t: time.simMs,
+                id: bot.id,
+                team: bot.character.team,
+                follow: decision.followPath,
+                obj: bot.objective ?? '-',
+                path: bot.path ? `${bot.pathIdx}/${bot.path.length}` : '-',
+                pos: bot.character.pos,
+                spd: bot.character.speed,
+              },
+            );
+          }
+        }
       }
     } else {
       // Freeze / round-end: still tick perception so KnownEnemies decay
       // and bots are ready to engage the moment freeze ends.
       for (const bot of bots) {
         if (!bot.character.alive) continue;
+        if (bot.aiDisabled) continue;
         bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
       }
     }
@@ -834,7 +1060,13 @@ function bootstrap(): void {
     } else {
       fps.resetFov();
     }
-    scopeHud.setLevel(effectiveScopeLevel);
+    scopeHud.setLevel(effectiveScopeLevel, renderInst?.def.scopeStyle ?? 'sniper');
+    // ADS view-model raise: only for "ads"-style scopes (rifles, pistols).
+    // Sniper scopes hide the view model entirely so the raise has no
+    // visual effect there.
+    const isAdsActive =
+      effectiveScopeLevel > 0 && (renderInst?.def.scopeStyle ?? 'sniper') === 'ads';
+    viewModel.setAds(isAdsActive);
 
     fps.syncRender();
     // Spectator override: while the local player is dead, refresh the
@@ -847,20 +1079,26 @@ function bootstrap(): void {
       spectator.applyToCamera(fps.camera);
       viewModel.setVisible(false);
     } else {
-      viewModel.setVisible(effectiveScopeLevel === 0);
+      // Hide the view model only when a sniper-style scope is up — for
+      // ADS-style aim-down-sights we keep the gun on screen so the player
+      // still sees the iron-sight silhouette.
+      const sniperScoped =
+        effectiveScopeLevel > 0 && (renderInst?.def.scopeStyle ?? 'sniper') === 'sniper';
+      viewModel.setVisible(!sniperScoped);
     }
     spectatorHud.setActive(isDead, spectator.currentTarget()?.id ?? null);
     // Keep the view model in sync with whatever weapon is currently active.
     // This catches purchases (which auto-switch the active slot) without
     // requiring an explicit setWeapon call from every code path.
     viewModel.setWeapon(renderInst);
-    viewModel.update(controller.state.speed, renderDtMs);
+    const renderCtrl = localPlayer.controller;
+    viewModel.update(renderCtrl.state.speed, renderDtMs);
     for (const b of bots) syncBotMesh(b);
     c4Entity.update(match.round?.bomb ?? null, time.simMs);
 
     const cam = fps.camera;
-    const yaw = controller.state.yaw;
-    const py = controller.state.pitch;
+    const yaw = renderCtrl.state.yaw;
+    const py = renderCtrl.state.pitch;
     const cosP = Math.cos(py);
     setListenerPose(
       cam.position.x, cam.position.y, cam.position.z,
@@ -892,7 +1130,7 @@ function bootstrap(): void {
   // Quiet a couple of unused-ish references for the linter.
   void engine; void scene; void makeInstance; void playSound;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, bots, navGrid, pathService, characters, get match() { return match; } };
+  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, bots, navGrid, pathService, characters, debugLog, get match() { return match; } };
 }
 
 function currentInstance(p: LocalPlayer): WeaponInstance | null {

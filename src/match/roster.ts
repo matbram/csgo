@@ -46,6 +46,14 @@ export function resetCharacterForRound(
   c.inAir = false;
   c.speed = 0;
   c.flashedUntilMs = 0;
+  c.leftLegDamage = 0;
+  c.rightLegDamage = 0;
+  c.leftArmDamage = 0;
+  c.rightArmDamage = 0;
+  c.leftLegDetached = false;
+  c.rightLegDetached = false;
+  c.leftArmDetached = false;
+  c.rightArmDetached = false;
   // Currently-armor and helmet are persistent goods — they're consumed
   // by damage, so we don't reset them. New round: keep what survived.
   // If the player died, the natural CS:GO behavior is they respawn fresh
@@ -127,14 +135,18 @@ export function resetRoster(
     resetCharacterForRound(c, 'CT', spawn, { keepInventory: survivors.has(c.id) });
   }
 
-  // Sync the local controller to the new spawn position/yaw.
-  if (localPlayer.character.alive) {
-    const s = localPlayer.controller.state;
-    s.pos.copyFrom(localPlayer.character.pos);
-    s.yaw = localPlayer.character.yaw;
+  // Sync the local controller to the new spawn position/yaw. Always
+  // operate on the local player's *own* character + controller, even
+  // when they're currently possessing a teammate bot — the next round
+  // restores them to their own body and the bot resets via its own
+  // path (snapBotToCharacterPose).
+  if (localPlayer.ownCharacter.alive) {
+    const s = localPlayer.ownController.state;
+    s.pos.copyFrom(localPlayer.ownCharacter.pos);
+    s.yaw = localPlayer.ownCharacter.yaw;
     s.pitch = 0;
     s.vel.set(0, 0, 0);
-    localPlayer.controller.snapToGround();
+    localPlayer.ownController.snapToGround();
   }
 }
 

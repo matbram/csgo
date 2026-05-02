@@ -69,6 +69,12 @@ export interface WeaponDef {
   scopedInaccuracyMul?: number;
   /** Movement speed scale while scoped (any level). Replaces moveSpeedScale. */
   scopedMoveSpeedScale?: number;
+  /** How the scope behaves visually + on fire.
+   *   - 'sniper' (AWP-style): heavy black-bar overlay; firing drops scope.
+   *   - 'ads'    (rifle/pistol-style): subtle FOV change, no overlay,
+   *     scope persists across shots so the player can keep aiming down sights.
+   *  Defaults to 'sniper' when omitted, for backward compat with the AWP. */
+  scopeStyle?: 'sniper' | 'ads';
   /** Optional alternate fire (RMB) for melee weapons: a heavier, slower
    *  attack. The base attack stays on LMB and uses the top-level rpm /
    *  baseDamage / falloff fields. */
@@ -197,6 +203,11 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     killReward: 300,
     fireSound: 'ak47_fire',
     reloadSound: 'ak47_reload',
+    scopeLevels: 1,
+    scopeFovDeg: [55],
+    scopedInaccuracyMul: 0.7,
+    scopedMoveSpeedScale: 0.55,
+    scopeStyle: 'ads',
   },
   m4a4: {
     id: 'm4a4',
@@ -226,6 +237,11 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     killReward: 300,
     fireSound: 'm4a4_fire',
     reloadSound: 'm4a4_reload',
+    scopeLevels: 1,
+    scopeFovDeg: [55],
+    scopedInaccuracyMul: 0.7,
+    scopedMoveSpeedScale: 0.55,
+    scopeStyle: 'ads',
   },
   usp_s: {
     id: 'usp_s',
@@ -255,6 +271,11 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     killReward: 300,
     fireSound: 'usp_fire',
     reloadSound: 'usp_reload',
+    scopeLevels: 1,
+    scopeFovDeg: [62],
+    scopedInaccuracyMul: 0.65,
+    scopedMoveSpeedScale: 0.7,
+    scopeStyle: 'ads',
   },
   glock18: {
     id: 'glock18',
@@ -284,6 +305,11 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     killReward: 300,
     fireSound: 'glock_fire',
     reloadSound: 'glock_reload',
+    scopeLevels: 1,
+    scopeFovDeg: [65],
+    scopedInaccuracyMul: 0.75,
+    scopedMoveSpeedScale: 0.75,
+    scopeStyle: 'ads',
   },
   awp: {
     id: 'awp',
@@ -317,6 +343,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     scopeFovDeg: [40, 10],
     scopedInaccuracyMul: 0.05,
     scopedMoveSpeedScale: 0.30,
+    scopeStyle: 'sniper',
   },
   knife: {
     id: 'knife',

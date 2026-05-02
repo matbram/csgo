@@ -14,8 +14,15 @@ import { events } from '../engine/events';
 import { computeInaccuracy } from './inaccuracy';
 import { time } from '../engine/time';
 import type { SmokeField } from '../grenades/smokeField';
+import { debugLog } from '../engine/debugLog';
 
 const MAX_RANGE_M = 120;
+/** Cumulative HP damage to a limb before it tears off the victim while
+ *  they're still alive. Calibrated so an AWP body shot to the leg
+ *  (≈ 80 hp before armour) is one-shot, an AK takes two leg hits, and
+ *  a pistol takes 3-4 — feels like the limb gives way under sustained
+ *  punishment without making every spray dismember someone. */
+const LIMB_DETACH_THRESHOLD = 60;
 
 export interface FireOptions {
   /** Origin of the bullet (eye position). */
@@ -90,6 +97,20 @@ export class CombatSystem {
       scatterDeg,
     );
 
+    // We log one terse line per shot (only for the local player — bot
+    // gunfire would dwarf the buffer in seconds). The interesting
+    // numbers for "is the bullet going where I aim" are sprayIndex,
+    // inaccuracyDeg, and aimDriftDeg (angle between view ray and the
+    // resolved bullet direction). Stationary first shot should have
+    // aimDrift=0.
+    let aimDriftDeg = 0;
+    if (debugLog.isEnabled('shooting') && opts.shooter.id === 'local') {
+      aimDriftDeg =
+        Math.acos(Math.max(-1, Math.min(1,
+          opts.fwdX * finalDir.x + opts.fwdY * finalDir.y + opts.fwdZ * finalDir.z,
+        ))) * 180 / Math.PI;
+    }
+
     // Melee weapons are short-range — anything past the falloff envelope
     // is wasted compute and would emit a kill-from-the-void event.
     const maxRange = weapon.fireMode === 'melee'
@@ -114,48 +135,121 @@ export class CombatSystem {
     ) ?? null;
     const visT = smokeBlockT !== null ? Math.min(worldT, smokeBlockT) : worldT;
 
-    // Raycast each character (skip shooter and dead). We clamp on
-    // visT (which folds smoke into the wall ray) so a character behind
-    // smoke isn't reported as a hit.
+    // Raycast each character. Alive characters use the full multi-band
+    // hitbox; corpses get a fat sphere around the lying body so the
+    // player can keep firing into a kill and watch limbs come off.
+    // We clamp on visT (which folds smoke into the wall ray) so a
+    // character behind smoke isn't reported as a hit.
     let closestT = visT;
     let bestVictim: Character | null = null;
+    let bestVictimWasAlive = true;
     let bestKind: HitboxKind = 'chest';
+    let bestSide: 'left' | 'right' | null = null;
     let bestPoint = { x: 0, y: 0, z: 0 };
     for (const c of this.characters()) {
-      if (!c.alive) continue;
       if (c.id === opts.shooter.id) continue;
-      const pose = hitboxPose(c);
-      const hit = raycastHitbox(
-        opts.ox, opts.oy, opts.oz,
-        finalDir.x, finalDir.y, finalDir.z,
-        pose, closestT,
-      );
-      if (hit && hit.t < closestT) {
-        closestT = hit.t;
-        bestVictim = c;
-        bestKind = hit.kind;
-        bestPoint = { x: hit.hitX, y: hit.hitY, z: hit.hitZ };
+      if (c.alive) {
+        const pose = hitboxPose(c);
+        const hit = raycastHitbox(
+          opts.ox, opts.oy, opts.oz,
+          finalDir.x, finalDir.y, finalDir.z,
+          pose, closestT,
+        );
+        if (hit && hit.t < closestT) {
+          closestT = hit.t;
+          bestVictim = c;
+          bestVictimWasAlive = true;
+          bestKind = hit.kind;
+          bestSide = hit.side;
+          bestPoint = { x: hit.hitX, y: hit.hitY, z: hit.hitZ };
+        }
+      } else {
+        // Corpse — sphere around the centre of the lying body. The
+        // tipped-over mesh hangs around `pos.y + 0.2`; a 0.55 m sphere
+        // covers torso + nearby limbs without being so big that
+        // players feel like they're shooting through the air.
+        const cx = c.pos.x;
+        const cy = c.pos.y + 0.30;
+        const cz = c.pos.z;
+        const t = raySphereWorld(opts.ox, opts.oy, opts.oz,
+          finalDir.x, finalDir.y, finalDir.z,
+          cx, cy, cz, 0.55, closestT);
+        if (t !== null && t < closestT) {
+          closestT = t;
+          bestVictim = c;
+          bestVictimWasAlive = false;
+          // Pick a random surviving limb as the "hit" location so the
+          // dismemberment routine peels something off instead of the
+          // same limb every shot.
+          const pick = pickRandomCorpseLimb();
+          bestKind = pick.kind;
+          bestSide = pick.side;
+          bestPoint = {
+            x: opts.ox + finalDir.x * t,
+            y: opts.oy + finalDir.y * t,
+            z: opts.oz + finalDir.z * t,
+          };
+        }
       }
     }
 
     // Resolve.
     if (bestVictim) {
-      const damageMul = opts.damageMul ?? 1;
-      const dmg = computeDamage({
-        weapon,
-        hitbox: bestKind,
-        distance: closestT,
-        victim: { hp: bestVictim.hp, armor: bestVictim.armor, helmet: bestVictim.helmet },
-        damageMul,
-      });
+      const corpseHit = !bestVictimWasAlive;
+      let hpDelta = 0;
+      let killing = false;
+      let limbDetached: { kind: 'leg' | 'arm'; side: 'left' | 'right' } | null = null;
+      if (!corpseHit) {
+        const damageMul = opts.damageMul ?? 1;
+        const dmg = computeDamage({
+          weapon,
+          hitbox: bestKind,
+          distance: closestT,
+          victim: { hp: bestVictim.hp, armor: bestVictim.armor, helmet: bestVictim.helmet },
+          damageMul,
+        });
+        hpDelta = Math.floor(dmg.hpDamage);
+        bestVictim.hp = Math.max(0, bestVictim.hp - hpDelta);
+        bestVictim.armor = Math.max(0, bestVictim.armor - dmg.armorDamage);
+        if (dmg.helmetDestroyed) bestVictim.helmet = false;
+        killing = bestVictim.hp <= 0;
 
-      // Apply damage (integer in CS:GO; we use floor for HP, floor for armor).
-      const hpDelta = Math.floor(dmg.hpDamage);
-      bestVictim.hp = Math.max(0, bestVictim.hp - hpDelta);
-      bestVictim.armor = Math.max(0, bestVictim.armor - dmg.armorDamage);
-      if (dmg.helmetDestroyed) bestVictim.helmet = false;
-      const killing = bestVictim.hp <= 0;
-      if (killing) bestVictim.alive = false;
+        // Per-side limb damage. Each side has its own counter, so two
+        // shots to the same leg detach that leg without affecting the
+        // other one. Only ACTUAL hp damage counts (hpDelta) so armour
+        // absorption applies to limbs too.
+        if (bestKind === 'leg' && bestSide !== null) {
+          if (bestSide === 'left' && !bestVictim.leftLegDetached) {
+            bestVictim.leftLegDamage += hpDelta;
+            if (bestVictim.leftLegDamage >= LIMB_DETACH_THRESHOLD) {
+              bestVictim.leftLegDetached = true;
+              limbDetached = { kind: 'leg', side: 'left' };
+            }
+          } else if (bestSide === 'right' && !bestVictim.rightLegDetached) {
+            bestVictim.rightLegDamage += hpDelta;
+            if (bestVictim.rightLegDamage >= LIMB_DETACH_THRESHOLD) {
+              bestVictim.rightLegDetached = true;
+              limbDetached = { kind: 'leg', side: 'right' };
+            }
+          }
+        } else if (bestKind === 'arm' && bestSide !== null) {
+          if (bestSide === 'left' && !bestVictim.leftArmDetached) {
+            bestVictim.leftArmDamage += hpDelta;
+            if (bestVictim.leftArmDamage >= LIMB_DETACH_THRESHOLD) {
+              bestVictim.leftArmDetached = true;
+              limbDetached = { kind: 'arm', side: 'left' };
+            }
+          } else if (bestSide === 'right' && !bestVictim.rightArmDetached) {
+            bestVictim.rightArmDamage += hpDelta;
+            if (bestVictim.rightArmDamage >= LIMB_DETACH_THRESHOLD) {
+              bestVictim.rightArmDetached = true;
+              limbDetached = { kind: 'arm', side: 'right' };
+            }
+          }
+        }
+
+        if (killing) bestVictim.alive = false;
+      }
 
       events.emit('combat:hit', {
         attackerId: opts.shooter.id,
@@ -165,7 +259,11 @@ export class CombatSystem {
         damage: hpDelta,
         headshot: bestKind === 'head',
         killing,
+        corpseHit,
+        limbDetached,
         hitX: bestPoint.x, hitY: bestPoint.y, hitZ: bestPoint.z,
+        victimFootY: bestVictim.pos.y,
+        dirX: finalDir.x, dirY: finalDir.y, dirZ: finalDir.z,
         distance: closestT,
         tMs: time.simMs,
       });
@@ -176,6 +274,18 @@ export class CombatSystem {
           weapon: weapon.id,
           headshot: bestKind === 'head',
           tMs: time.simMs,
+        });
+      }
+      if (debugLog.isEnabled('shooting') && opts.shooter.id === 'local') {
+        debugLog.shooting('shot', {
+          weapon: weapon.id,
+          spray: opts.sprayIndex,
+          inacc: opts.inaccuracyDeg,
+          drift: aimDriftDeg,
+          hit: `${corpseHit ? 'corpse:' : ''}${bestVictim.id}/${bestKind}`,
+          dmg: hpDelta,
+          kill: killing,
+          dist: closestT,
         });
       }
       return {
@@ -200,6 +310,17 @@ export class CombatSystem {
         distance: worldT,
         tMs: time.simMs,
       });
+      if (debugLog.isEnabled('shooting') && opts.shooter.id === 'local') {
+        debugLog.shooting('shot', {
+          weapon: weapon.id,
+          spray: opts.sprayIndex,
+          inacc: opts.inaccuracyDeg,
+          drift: aimDriftDeg,
+          hit: `wall/${worldHit.surface}`,
+          dist: worldT,
+          end: { x: ex, y: ey, z: ez },
+        });
+      }
       return {
         endX: ex, endY: ey, endZ: ez,
         kind: 'world',
@@ -208,6 +329,16 @@ export class CombatSystem {
       };
     }
 
+    if (debugLog.isEnabled('shooting') && opts.shooter.id === 'local') {
+      debugLog.shooting('shot', {
+        weapon: weapon.id,
+        spray: opts.sprayIndex,
+        inacc: opts.inaccuracyDeg,
+        drift: aimDriftDeg,
+        hit: 'miss',
+        dist: maxRange,
+      });
+    }
     // Miss into the void.
     return {
       endX: opts.ox + finalDir.x * maxRange,
@@ -221,6 +352,44 @@ export class CombatSystem {
 
 function oyEnd(oy: number, dy: number, t: number): number {
   return oy + dy * t;
+}
+
+/** Ray vs sphere in world space. Returns the nearest forward intersection
+ *  ≤ `maxT`, or null. Used for the broad-phase corpse hit check. */
+function raySphereWorld(
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  cx: number, cy: number, cz: number,
+  radius: number,
+  maxT: number,
+): number | null {
+  const lx = ox - cx, ly = oy - cy, lz = oz - cz;
+  const a = dx * dx + dy * dy + dz * dz;
+  const b = 2 * (lx * dx + ly * dy + lz * dz);
+  const c = lx * lx + ly * ly + lz * lz - radius * radius;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;
+  const sq = Math.sqrt(disc);
+  const t1 = (-b - sq) / (2 * a);
+  const t2 = (-b + sq) / (2 * a);
+  // Pick the nearest forward hit (eye is usually outside the sphere; use
+  // the entry point. If we're inside, t1 < 0 and t2 > 0 — use t2.)
+  const t = t1 > 0 ? t1 : t2;
+  if (t <= 0 || t > maxT) return null;
+  return t;
+}
+
+/** Random surviving-limb pick for a corpse hit. Weighted toward
+ *  arms/legs so centre-mass spam shreds limbs first; head and chest
+ *  still come up so a sustained burst eventually hollows the body
+ *  out completely. Side is random for limbs, null for head/chest. */
+function pickRandomCorpseLimb(): { kind: HitboxKind; side: 'left' | 'right' | null } {
+  const r = Math.random();
+  const side: 'left' | 'right' = Math.random() < 0.5 ? 'left' : 'right';
+  if (r < 0.40) return { kind: 'leg', side };
+  if (r < 0.70) return { kind: 'arm', side };
+  if (r < 0.90) return { kind: 'chest', side: null };
+  return { kind: 'head', side: null };
 }
 
 /** Convenience export so consumers don't need to import inaccuracy + def. */

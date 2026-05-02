@@ -203,7 +203,15 @@ export function planRoundStart(
 }
 
 /** React to a bomb plant. T strategist installs a defensive plan; CT
- *  strategist installs a retake plan. Both target the planted site. */
+ *  strategist installs a retake plan. Both target the planted site.
+ *  CT side additionally re-routes its closest alive bot's objective
+ *  from the retake-cover callout to the bomb's actual position so
+ *  someone walks within defuse range — the brain's defuse trigger only
+ *  fires inside 1.4 m, but the CT_RETAKE plans only get bots to the
+ *  site perimeter (5–10 m from where the bomb was planted), so without
+ *  this nobody ever transitions into the defuse state and the bomb
+ *  ticks down unopposed. Other CTs hold their retake angles to cover
+ *  the designated defuser. */
 export function reactToBombPlanted(
   bb: TeamBlackboard,
   bots: ReadonlyArray<Bot>,
@@ -215,12 +223,45 @@ export function reactToBombPlanted(
   if (!bomb.site || !bomb.pos) return;
   const plan = pickPostPlantPlan(bb.side, bomb.site);
   applyPlan(bb, plan, bots, world, navGrid, nowMs);
+  if (bb.side === 'CT') {
+    const closest = closestAliveCt(bots, bomb.pos);
+    if (closest) {
+      // Snap the bomb's XZ to a walkable cell — the bomb itself can
+      // sit on a navmesh-blocked tile (e.g. stair edge, against a
+      // crate). The bot walks to the snapped cell, then the brain's
+      // 1.4 m defuse-approach check picks up the actual bomb pos.
+      let x = bomb.pos.x, z = bomb.pos.z;
+      const snapped = navGrid.nearestWalkable(x, z);
+      if (snapped) {
+        const c = navGrid.cellCenterWorld(snapped.i, snapped.j);
+        x = c.x; z = c.z;
+      }
+      bb.objectiveByBot.set(closest.id, {
+        x, z,
+        callout: bomb.site === 'A' ? 'A_SITE' : 'B_SITE',
+        role: 'ct_rotator',
+      });
+    }
+  }
   recordEvent(bb, {
     type: 'bombPlanted',
     site: bomb.site,
     x: bomb.pos.x, z: bomb.pos.z,
     tMs: nowMs,
   });
+}
+
+function closestAliveCt(bots: ReadonlyArray<Bot>, pos: { x: number; z: number }): Bot | null {
+  let best: Bot | null = null;
+  let bestSq = Infinity;
+  for (const b of bots) {
+    if (b.character.team !== 'CT' || !b.character.alive) continue;
+    const dx = pos.x - b.character.pos.x;
+    const dz = pos.z - b.character.pos.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestSq) { best = b; bestSq = d2; }
+  }
+  return best;
 }
 
 /** Look up the world XZ for a bot's current objective. Returns null when

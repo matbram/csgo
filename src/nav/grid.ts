@@ -76,13 +76,24 @@ export class NavGrid {
     const groundY = new Float32Array(total);
 
     const probeY = world.bounds.maxY + probeAbove;
+    // The configured `probeDrop` is a *floor* on how far down we'll
+    // search. It must always reach the lowest piece of geometry in the
+    // map — otherwise tall background buildings push `bounds.maxY` up
+    // and the probe range starts above the actual playable floor (y=0
+    // on Dust 2). When that happens every cell that only sits on the
+    // world floor reads as unwalkable, the navmesh ends up empty, no
+    // bot can compute a path, and "everyone stands still at round
+    // start". Use the world span plus a small margin so the probe
+    // always reaches `bounds.minY` regardless of skyline height.
+    const worldSpanY = (world.bounds.maxY - world.bounds.minY) + probeAbove + 1.0;
+    const effectiveDrop = Math.max(probeDrop, worldSpanY);
     for (let j = 0; j < cellsZ; j++) {
       for (let i = 0; i < cellsX; i++) {
         const x = minX + (i + 0.5) * cellSize;
         const z = minZ + (j + 0.5) * cellSize;
         const idx = j * cellsX + i;
 
-        const ground = query.groundProbe(x, z, probeY, probeDrop);
+        const ground = query.groundProbe(x, z, probeY, effectiveDrop);
         if (!ground) {
           groundY[idx] = NO_GROUND;
           walkable[idx] = 0;
