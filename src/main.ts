@@ -62,6 +62,7 @@ import { buildTacticalGraph, type TacticalGraph } from './ai/world/tacticalGraph
 import { dust2Overlay } from './ai/world/tacticalOverlay.dust2';
 import { installCommsTriggers, tickComms, setCommsSimNow, applyCommsIntel } from './ai/comms/triggers';
 import { installReactive, tickReactive } from './ai/reactive';
+import { installSquadCoordinator, tickSquadCoordinator } from './ai/squad/coordinator';
 import { resetComms } from './ai/comms/callouts';
 import { CalloutFeedHud } from './hud/calloutFeed';
 import type { Character } from './entities/character';
@@ -205,6 +206,12 @@ function bootstrap(): void {
   for (const b of bots) botById.set(b.id, b);
   installCommsTriggers({ botById, tBoard, ctBoard, world });
   installReactive();
+  installSquadCoordinator({
+    botById,
+    bots: () => bots,
+    tBoard, ctBoard, world, navGrid,
+    simMs: () => time.simMs,
+  });
 
   // Compute spawn centroids once — used by the bot Save state to pick
   // a retreat target. Spawn polygons aren't authored separately, so we
@@ -868,6 +875,10 @@ function bootstrap(): void {
       // "spotted A long" turns to face the angle, but won't fire
       // blind into it (LOS still required for visible).
       applyCommsIntel(bots, time.simMs);
+      // Squad coordinator: react to recent comms log entries (e.g.
+      // siteClear → rotate one bot off the cleared site to the other).
+      // The death replan is driven by combat:kill on the bus directly.
+      tickSquadCoordinator();
 
       // Build the AI world view once per tick. Phase 0: only the debug
       // HUD reads it; brain decisions still flow through the legacy
