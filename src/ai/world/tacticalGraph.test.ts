@@ -10,7 +10,6 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { NavGrid } from '../../nav/grid';
 import { World } from '../../map/world';
 import {
@@ -218,7 +217,4 @@ describe('buildTacticalGraph', () => {
     expect(count).toBeGreaterThan(0);
     expect(sumExposure / count).toBeGreaterThan(0.5);
   });
-
-  // Side reference for unused import suppression in the wall-record type.
-  void Vector3;
 });

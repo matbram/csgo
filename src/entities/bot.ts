@@ -144,10 +144,11 @@ export function createBot(
     // baseline.
     commsLatencyMs: difficulty.commsLatencyMs * (1.4 - 0.8 * identity.personality.teamwork),
     identity,
-    // Expert bots get the planner by default. Lower difficulties stay
-    // on the legacy utility selector for now — the planner is opt-in
-    // per bot so we can roll it out safely.
-    usePlanner: (opts?.difficulty ?? 'medium') === 'expert',
+    // Phase 6 default: medium / hard / expert all use the GOAP planner.
+    // Easy stays on the legacy utility selector so the panic/abandon
+    // pathway in `src/ai/reactive/index.ts` still has a forgiving
+    // fallback brain to drop into.
+    usePlanner: (opts?.difficulty ?? 'medium') !== 'easy',
   };
 }
 

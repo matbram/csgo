@@ -20,7 +20,6 @@
 
 import type { PlanInputs, PlannedAction, Goal } from './types';
 import type { PersonalityProfile } from '../personality';
-import type { CalloutId } from '../../map/types';
 
 /** Plan toward the highest-urgency satisfiable goal.
  *  Returns null when no goal applies (idle bot waiting for orders). */
@@ -206,5 +205,3 @@ function shortId(id: string): string {
 function fmtXZ(p: { x: number; z: number }): string {
   return `${p.x.toFixed(0)},${p.z.toFixed(0)}`;
 }
-
-void (null as CalloutId | null);  // type touch
