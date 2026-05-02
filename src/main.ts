@@ -124,7 +124,15 @@ function bootstrap(): void {
   const combatSystem = new CombatSystem(query, () => characters, grenadeSystem.smoke);
   const firing = new FiringController(combatSystem);
   installAudio();
-  installCombatVisuals();
+  // Pass the world query (for wall-blood ray casts) and a humanoid
+  // lookup (so the visuals layer can rip a body part off the bot that
+  // just died) into the combat visuals install. The local player has
+  // no humanoid mesh — `partsForId('local')` returns null and the
+  // dismemberment step silently skips for them.
+  installCombatVisuals({
+    worldQuery: query,
+    partsForId: (id) => bots.find(b => b.id === id)?.parts ?? null,
+  });
   installGrenadeVisuals(grenadeSystem);
 
   // 6.5) Nav grid + path service. Built once at boot — Dust 2 is static

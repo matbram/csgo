@@ -125,7 +125,9 @@ export function createBot(
 
 /** Sync the controller's spawn from the character record (which the
  *  match's roster reset writes to). Call after `resetCharacterForRound`
- *  and before stepping the bot for the new round. */
+ *  and before stepping the bot for the new round. Also re-enables any
+ *  humanoid part that was hidden by a dismemberment kill last round —
+ *  otherwise a respawned bot would be missing a head. */
 export function snapBotToCharacterPose(bot: Bot): void {
   const s = bot.controller.state;
   s.pos.copyFrom(bot.character.pos);
@@ -137,6 +139,10 @@ export function snapBotToCharacterPose(bot: Bot): void {
   bot.pathIdx = 0;
   bot.objective = null;
   bot.nextPlanAfterMs = 0;
+  bot.parts.body.setEnabled(true);
+  bot.parts.head.setEnabled(true);
+  bot.parts.legs.setEnabled(true);
+  for (const g of bot.parts.gear) g.setEnabled(true);
 }
 
 /** Set a new objective and clear any in-flight path. The next sim tick

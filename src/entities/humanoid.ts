@@ -182,3 +182,89 @@ export function disposeHumanoid(parts: HumanoidParts): void {
   for (const g of parts.gear) g.dispose();
   parts.root.dispose();
 }
+
+/** Tear a body part off the humanoid for a gore-kill effect. Clones the
+ *  matching mesh at its current world transform, reparents the clone to
+ *  the scene root (so it can fly freely without following the corpse),
+ *  and hides the original on the humanoid so the body looks mutilated.
+ *  Returns the detached mesh so the visuals module can run physics on
+ *  it and let it fall to the ground.
+ *
+ *  Helmet pieces ride along when the head goes — they're parented to the
+ *  head, so cloning the head alone leaves them stuck mid-air. The
+ *  function returns the additional helmet clones via the second return
+ *  slot for the same physics treatment. */
+export function detachBodyPart(
+  parts: HumanoidParts,
+  kind: 'head' | 'arm' | 'leg' | 'chest',
+): { primary: Mesh; extras: Mesh[] } | null {
+  let primaryOriginal: Mesh | undefined;
+  const extraOriginals: Mesh[] = [];
+
+  switch (kind) {
+    case 'head':
+      primaryOriginal = parts.head;
+      // The helmet shell + rim are parented to head — they have to come
+      // along or they'll float in mid-air.
+      for (const g of parts.gear) {
+        if (g.name.includes('helmet')) extraOriginals.push(g);
+      }
+      break;
+    case 'leg':
+      primaryOriginal = parts.legs;
+      // Boots are root-parented, but rip the closer one off too for
+      // visual coherence.
+      for (const g of parts.gear) {
+        if (g.name.includes('boot')) extraOriginals.push(g);
+      }
+      break;
+    case 'arm':
+      // We don't have a dedicated arm mesh — the shoulder gear stands
+      // in for the limb. Pick whichever shoulder is still attached.
+      for (const g of parts.gear) {
+        if (/shoulder-/.test(g.name) && g.isEnabled()) {
+          primaryOriginal = g; break;
+        }
+      }
+      break;
+    case 'chest':
+      // Body shot — peel a shoulder pad off as a gib. The torso itself
+      // stays so the corpse still has a recognisable shape.
+      for (const g of parts.gear) {
+        if (/shoulder-/.test(g.name) && g.isEnabled()) {
+          primaryOriginal = g; break;
+        }
+      }
+      break;
+  }
+
+  if (!primaryOriginal) return null;
+
+  const clonePart = (orig: Mesh): Mesh | null => {
+    const clone = orig.clone(`gib-${orig.name}`, null);
+    if (!clone) return null;
+    // Clone retains the original's local transform; convert to absolute
+    // world transform before reparenting so the gib stays where the
+    // body part was visually.
+    const absPos = orig.getAbsolutePosition();
+    const absRot = orig.absoluteRotationQuaternion;
+    clone.setParent(null);
+    clone.position.copyFrom(absPos);
+    clone.rotationQuaternion = absRot.clone();
+    clone.rotation.set(0, 0, 0);
+    return clone;
+  };
+
+  const primary = clonePart(primaryOriginal);
+  if (!primary) return null;
+  primaryOriginal.setEnabled(false);
+
+  const extras: Mesh[] = [];
+  for (const e of extraOriginals) {
+    const c = clonePart(e);
+    if (c) extras.push(c);
+    e.setEnabled(false);
+  }
+
+  return { primary, extras };
+}
