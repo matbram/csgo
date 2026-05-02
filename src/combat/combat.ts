@@ -129,48 +129,81 @@ export class CombatSystem {
     ) ?? null;
     const visT = smokeBlockT !== null ? Math.min(worldT, smokeBlockT) : worldT;
 
-    // Raycast each character (skip shooter and dead). We clamp on
-    // visT (which folds smoke into the wall ray) so a character behind
-    // smoke isn't reported as a hit.
+    // Raycast each character. Alive characters use the full multi-band
+    // hitbox; corpses get a fat sphere around the lying body so the
+    // player can keep firing into a kill and watch limbs come off.
+    // We clamp on visT (which folds smoke into the wall ray) so a
+    // character behind smoke isn't reported as a hit.
     let closestT = visT;
     let bestVictim: Character | null = null;
+    let bestVictimWasAlive = true;
     let bestKind: HitboxKind = 'chest';
     let bestPoint = { x: 0, y: 0, z: 0 };
     for (const c of this.characters()) {
-      if (!c.alive) continue;
       if (c.id === opts.shooter.id) continue;
-      const pose = hitboxPose(c);
-      const hit = raycastHitbox(
-        opts.ox, opts.oy, opts.oz,
-        finalDir.x, finalDir.y, finalDir.z,
-        pose, closestT,
-      );
-      if (hit && hit.t < closestT) {
-        closestT = hit.t;
-        bestVictim = c;
-        bestKind = hit.kind;
-        bestPoint = { x: hit.hitX, y: hit.hitY, z: hit.hitZ };
+      if (c.alive) {
+        const pose = hitboxPose(c);
+        const hit = raycastHitbox(
+          opts.ox, opts.oy, opts.oz,
+          finalDir.x, finalDir.y, finalDir.z,
+          pose, closestT,
+        );
+        if (hit && hit.t < closestT) {
+          closestT = hit.t;
+          bestVictim = c;
+          bestVictimWasAlive = true;
+          bestKind = hit.kind;
+          bestPoint = { x: hit.hitX, y: hit.hitY, z: hit.hitZ };
+        }
+      } else {
+        // Corpse — sphere around the centre of the lying body. The
+        // tipped-over mesh hangs around `pos.y + 0.2`; a 0.55 m sphere
+        // covers torso + nearby limbs without being so big that
+        // players feel like they're shooting through the air.
+        const cx = c.pos.x;
+        const cy = c.pos.y + 0.30;
+        const cz = c.pos.z;
+        const t = raySphereWorld(opts.ox, opts.oy, opts.oz,
+          finalDir.x, finalDir.y, finalDir.z,
+          cx, cy, cz, 0.55, closestT);
+        if (t !== null && t < closestT) {
+          closestT = t;
+          bestVictim = c;
+          bestVictimWasAlive = false;
+          // Pick a random surviving limb as the "hit" location so the
+          // dismemberment routine peels something off instead of the
+          // same limb every shot.
+          bestKind = pickRandomCorpseLimb();
+          bestPoint = {
+            x: opts.ox + finalDir.x * t,
+            y: opts.oy + finalDir.y * t,
+            z: opts.oz + finalDir.z * t,
+          };
+        }
       }
     }
 
     // Resolve.
     if (bestVictim) {
-      const damageMul = opts.damageMul ?? 1;
-      const dmg = computeDamage({
-        weapon,
-        hitbox: bestKind,
-        distance: closestT,
-        victim: { hp: bestVictim.hp, armor: bestVictim.armor, helmet: bestVictim.helmet },
-        damageMul,
-      });
-
-      // Apply damage (integer in CS:GO; we use floor for HP, floor for armor).
-      const hpDelta = Math.floor(dmg.hpDamage);
-      bestVictim.hp = Math.max(0, bestVictim.hp - hpDelta);
-      bestVictim.armor = Math.max(0, bestVictim.armor - dmg.armorDamage);
-      if (dmg.helmetDestroyed) bestVictim.helmet = false;
-      const killing = bestVictim.hp <= 0;
-      if (killing) bestVictim.alive = false;
+      const corpseHit = !bestVictimWasAlive;
+      let hpDelta = 0;
+      let killing = false;
+      if (!corpseHit) {
+        const damageMul = opts.damageMul ?? 1;
+        const dmg = computeDamage({
+          weapon,
+          hitbox: bestKind,
+          distance: closestT,
+          victim: { hp: bestVictim.hp, armor: bestVictim.armor, helmet: bestVictim.helmet },
+          damageMul,
+        });
+        hpDelta = Math.floor(dmg.hpDamage);
+        bestVictim.hp = Math.max(0, bestVictim.hp - hpDelta);
+        bestVictim.armor = Math.max(0, bestVictim.armor - dmg.armorDamage);
+        if (dmg.helmetDestroyed) bestVictim.helmet = false;
+        killing = bestVictim.hp <= 0;
+        if (killing) bestVictim.alive = false;
+      }
 
       events.emit('combat:hit', {
         attackerId: opts.shooter.id,
@@ -180,6 +213,7 @@ export class CombatSystem {
         damage: hpDelta,
         headshot: bestKind === 'head',
         killing,
+        corpseHit,
         hitX: bestPoint.x, hitY: bestPoint.y, hitZ: bestPoint.z,
         victimFootY: bestVictim.pos.y,
         dirX: finalDir.x, dirY: finalDir.y, dirZ: finalDir.z,
@@ -201,7 +235,7 @@ export class CombatSystem {
           spray: opts.sprayIndex,
           inacc: opts.inaccuracyDeg,
           drift: aimDriftDeg,
-          hit: `${bestVictim.id}/${bestKind}`,
+          hit: `${corpseHit ? 'corpse:' : ''}${bestVictim.id}/${bestKind}`,
           dmg: hpDelta,
           kill: killing,
           dist: closestT,
@@ -271,6 +305,43 @@ export class CombatSystem {
 
 function oyEnd(oy: number, dy: number, t: number): number {
   return oy + dy * t;
+}
+
+/** Ray vs sphere in world space. Returns the nearest forward intersection
+ *  ≤ `maxT`, or null. Used for the broad-phase corpse hit check. */
+function raySphereWorld(
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  cx: number, cy: number, cz: number,
+  radius: number,
+  maxT: number,
+): number | null {
+  const lx = ox - cx, ly = oy - cy, lz = oz - cz;
+  const a = dx * dx + dy * dy + dz * dz;
+  const b = 2 * (lx * dx + ly * dy + lz * dz);
+  const c = lx * lx + ly * ly + lz * lz - radius * radius;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;
+  const sq = Math.sqrt(disc);
+  const t1 = (-b - sq) / (2 * a);
+  const t2 = (-b + sq) / (2 * a);
+  // Pick the nearest forward hit (eye is usually outside the sphere; use
+  // the entry point. If we're inside, t1 < 0 and t2 > 0 — use t2.)
+  const t = t1 > 0 ? t1 : t2;
+  if (t <= 0 || t > maxT) return null;
+  return t;
+}
+
+/** Random surviving-limb pick for a corpse hit. Weighted toward
+ *  arms/legs so center-mass spam shreds limbs first; head and chest
+ *  still come up so a sustained burst eventually hollows the body
+ *  out completely. */
+function pickRandomCorpseLimb(): HitboxKind {
+  const r = Math.random();
+  if (r < 0.40) return 'leg';
+  if (r < 0.70) return 'arm';
+  if (r < 0.90) return 'chest';
+  return 'head';
 }
 
 /** Convenience export so consumers don't need to import inaccuracy + def. */

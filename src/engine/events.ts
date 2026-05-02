@@ -42,6 +42,10 @@ export interface EventMap {
     damage: number;
     headshot: boolean;
     killing: boolean;
+    /** True when the bullet struck an already-dead body. The damage
+     *  applied is 0, no kill credit, but visuals still fire the
+     *  full gore stack (gibs + blood) so corpses can be mutilated. */
+    corpseHit: boolean;
     hitX: number; hitY: number; hitZ: number;
     /** Victim's foot Y at the time of impact — used by blood-decal
      *  visuals to drop a pool on the surface they're standing on. */

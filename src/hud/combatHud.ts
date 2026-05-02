@@ -75,8 +75,11 @@ export class CombatHud {
     this.host.appendChild(this.killfeed);
 
     // Subscriptions
-    events.on('combat:hit', ({ attackerId, killing }) => {
-      if (attackerId === 'local') {
+    events.on('combat:hit', ({ attackerId, killing, corpseHit }) => {
+      // Corpse mutilation shouldn't trip the hit-marker — the player
+      // already killed this target, so a second flash would just
+      // confuse "did I get a kill?" feedback.
+      if (attackerId === 'local' && !corpseHit) {
         this.flashHitMarker(killing);
       }
     });

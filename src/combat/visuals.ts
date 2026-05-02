@@ -507,23 +507,27 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
   events.on('combat:hit', ({
     hitX, hitY, hitZ, victimFootY,
     dirX, dirY, dirZ,
-    headshot, killing, hitbox, victimId,
+    headshot, killing, corpseHit, hitbox, victimId,
   }) => {
     if (!bloodParticles) return;
+    // Treat corpse hits the same as killing hits for visuals: heavy
+    // blood, multiple ground decals, wall splatter, and another chunk
+    // ripped off. The user wanted to be able to mutilate bodies.
+    const dismember = killing || corpseHit;
 
-    // 1) Particle spurt. Heavy on headshots / killing hits.
+    // 1) Particle spurt. Heavy on headshots / killing / corpse hits.
     bloodParticles.emitter = new Vector3(hitX, hitY, hitZ);
     bloodParticles.direction1 = new Vector3(dirX - 0.9, dirY + 0.5, dirZ - 0.9);
     bloodParticles.direction2 = new Vector3(dirX + 0.9, dirY + 1.4, dirZ + 0.9);
     let count = 60;
     if (headshot) count = 180;
-    else if (killing) count = 130;
+    else if (dismember) count = 130;
     bloodParticles.manualEmitCount = count;
 
     // 2) Ground splatter — 3–6 pools around the foot. Each tile is a
     //    short walk apart so the ground reads as a real mess instead
     //    of one neat circle.
-    const groundPools = headshot ? 5 : killing ? 4 : 2;
+    const groundPools = headshot ? 5 : dismember ? 4 : 2;
     for (let i = 0; i < groundPools; i++) {
       const r = Math.random() * (headshot ? 0.7 : 0.45);
       const ang = Math.random() * Math.PI * 2;
@@ -537,8 +541,8 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
     //    the back wall (or floor, if there's nothing nearby) gets a
     //    streak. Only runs when we have a world query installed.
     if (worldQuery) {
-      const rays = headshot ? 6 : killing ? 5 : 3;
-      const sizeM = headshot ? 0.55 : killing ? 0.45 : 0.32;
+      const rays = headshot ? 6 : dismember ? 5 : 3;
+      const sizeM = headshot ? 0.55 : dismember ? 0.45 : 0.32;
       // Start the rays a hair past the body so they don't immediately
       // hit the geometry the bullet was already inside.
       sprayWallBlood(
@@ -549,12 +553,12 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
       );
     }
 
-    // 4) Dismemberment — only on killing hits, only when we can look
-    //    up the victim's mesh. Pick the limb that best matches the
-    //    hitbox: a head shot rips the head + helmet, a leg shot tears
-    //    the legs off, an arm shot pops a shoulder, anything else
-    //    just rips a shoulder pad as a token gib.
-    if (killing && partsForId) {
+    // 4) Dismemberment — fires on a killing hit AND on every later
+    //    shot into the corpse. Picks the limb that matches the hitbox
+    //    (random for corpse hits, see combat.fire). detachBodyPart
+    //    silently no-ops if the limb is already missing, so a body
+    //    eventually runs out of pieces to lose.
+    if (dismember && partsForId) {
       const parts = partsForId(victimId);
       if (parts) {
         const partKind: 'head' | 'arm' | 'leg' | 'chest' =

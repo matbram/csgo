@@ -329,6 +329,7 @@ export class GrenadeSystem {
         events.emit('combat:hit', {
           attackerId: g.throwerId, victimId: c.id, weapon: 'he',
           hitbox: 'chest', damage: hpDelta, headshot: false, killing: false,
+          corpseHit: false,
           hitX: tx, hitY: ty, hitZ: tz,
           victimFootY: c.pos.y,
           dirX: (tx - g.pos.x) * inv,
