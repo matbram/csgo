@@ -38,7 +38,19 @@ export interface EventMap {
     attackerId: string;
     victimId: string;
     weapon: string;
+    /** Coarse damage class — head/chest/stomach/arm/leg. Drives the
+     *  CS:GO damage multiplier; the HUD formats kill feed text from it. */
     hitbox: string;
+    /** Precise anatomical segment struck (or randomly chosen for
+     *  corpse hits): head, chest, stomach, upperArm/forearm/hand,
+     *  thigh/shin/foot. Visuals route dismemberment off this. */
+    segment:
+      | 'head' | 'chest' | 'stomach'
+      | 'upperArm' | 'forearm' | 'hand'
+      | 'thigh' | 'shin' | 'foot';
+    /** Side of the body the segment is on. Null for centre-line
+     *  segments (head/chest/stomach), 'left' or 'right' otherwise. */
+    side: 'left' | 'right' | null;
     damage: number;
     headshot: boolean;
     killing: boolean;
@@ -46,12 +58,20 @@ export interface EventMap {
      *  applied is 0, no kill credit, but visuals still fire the
      *  full gore stack (gibs + blood) so corpses can be mutilated. */
     corpseHit: boolean;
-    /** When set, this hit pushed the cumulative per-side limb damage
-     *  past the detach threshold — the limb tears off mid-fight even
-     *  on a non-killing shot. Includes which side (left/right) so
-     *  the visual dismemberment picks the correct piece. The victim
-     *  keeps fighting (slower / less accurate). */
-    limbDetached: { kind: 'leg' | 'arm'; side: 'left' | 'right' } | null;
+    /** When set, this hit pushed the cumulative per-segment damage
+     *  past the detach threshold — the segment tears off mid-fight
+     *  even on a non-killing shot, and any distal segments cascade
+     *  off with it (lose the thigh → shin and foot follow). The
+     *  payload names the proximal break point; the visuals layer
+     *  asks the humanoid to detach that segment which handles the
+     *  cascade internally. The victim keeps fighting (slower / less
+     *  accurate). */
+    limbDetached: {
+      segment:
+        | 'upperArm' | 'forearm' | 'hand'
+        | 'thigh' | 'shin' | 'foot';
+      side: 'left' | 'right';
+    } | null;
     hitX: number; hitY: number; hitZ: number;
     /** Victim's foot Y at the time of impact — used by blood-decal
      *  visuals to drop a pool on the surface they're standing on. */

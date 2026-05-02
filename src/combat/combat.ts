@@ -5,11 +5,13 @@
 
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { WorldQuery } from '../player/physics';
-import type { Character } from '../entities/character';
+import type { Character, LimbSegmentKind, LimbSide } from '../entities/character';
 import type { WeaponDef } from '../weapons/definitions';
 import { computeDamage, type HitboxKind } from './damage';
-import { raycastHitbox } from './hitbox';
-import { hitboxPose } from '../entities/character';
+import { raycastHitbox, type HitboxSegment } from './hitbox';
+import {
+  hitboxPose, limbKey, distalSegments, SEGMENT_DETACH_HP,
+} from '../entities/character';
 import { events } from '../engine/events';
 import { computeInaccuracy } from './inaccuracy';
 import { time } from '../engine/time';
@@ -17,12 +19,6 @@ import type { SmokeField } from '../grenades/smokeField';
 import { debugLog } from '../engine/debugLog';
 
 const MAX_RANGE_M = 120;
-/** Cumulative HP damage to a limb before it tears off the victim while
- *  they're still alive. Calibrated so an AWP body shot to the leg
- *  (≈ 80 hp before armour) is one-shot, an AK takes two leg hits, and
- *  a pistol takes 3-4 — feels like the limb gives way under sustained
- *  punishment without making every spray dismember someone. */
-const LIMB_DETACH_THRESHOLD = 60;
 
 export interface FireOptions {
   /** Origin of the bullet (eye position). */
@@ -144,7 +140,8 @@ export class CombatSystem {
     let bestVictim: Character | null = null;
     let bestVictimWasAlive = true;
     let bestKind: HitboxKind = 'chest';
-    let bestSide: 'left' | 'right' | null = null;
+    let bestSegment: HitboxSegment = 'chest';
+    let bestSide: LimbSide | null = null;
     let bestPoint = { x: 0, y: 0, z: 0 };
     for (const c of this.characters()) {
       if (c.id === opts.shooter.id) continue;
@@ -160,6 +157,7 @@ export class CombatSystem {
           bestVictim = c;
           bestVictimWasAlive = true;
           bestKind = hit.kind;
+          bestSegment = hit.segment;
           bestSide = hit.side;
           bestPoint = { x: hit.hitX, y: hit.hitY, z: hit.hitZ };
         }
@@ -178,11 +176,12 @@ export class CombatSystem {
           closestT = t;
           bestVictim = c;
           bestVictimWasAlive = false;
-          // Pick a random surviving limb as the "hit" location so the
-          // dismemberment routine peels something off instead of the
-          // same limb every shot.
-          const pick = pickRandomCorpseLimb();
+          // Pick a random surviving segment as the "hit" location so
+          // the dismemberment routine peels something off instead of
+          // the same limb every shot.
+          const pick = pickRandomCorpseSegment(c);
           bestKind = pick.kind;
+          bestSegment = pick.segment;
           bestSide = pick.side;
           bestPoint = {
             x: opts.ox + finalDir.x * t,
@@ -198,7 +197,7 @@ export class CombatSystem {
       const corpseHit = !bestVictimWasAlive;
       let hpDelta = 0;
       let killing = false;
-      let limbDetached: { kind: 'leg' | 'arm'; side: 'left' | 'right' } | null = null;
+      let limbDetached: { segment: LimbSegmentKind; side: LimbSide } | null = null;
       if (!corpseHit) {
         const damageMul = opts.damageMul ?? 1;
         const dmg = computeDamage({
@@ -214,36 +213,25 @@ export class CombatSystem {
         if (dmg.helmetDestroyed) bestVictim.helmet = false;
         killing = bestVictim.hp <= 0;
 
-        // Per-side limb damage. Each side has its own counter, so two
-        // shots to the same leg detach that leg without affecting the
-        // other one. Only ACTUAL hp damage counts (hpDelta) so armour
-        // absorption applies to limbs too.
-        if (bestKind === 'leg' && bestSide !== null) {
-          if (bestSide === 'left' && !bestVictim.leftLegDetached) {
-            bestVictim.leftLegDamage += hpDelta;
-            if (bestVictim.leftLegDamage >= LIMB_DETACH_THRESHOLD) {
-              bestVictim.leftLegDetached = true;
-              limbDetached = { kind: 'leg', side: 'left' };
-            }
-          } else if (bestSide === 'right' && !bestVictim.rightLegDetached) {
-            bestVictim.rightLegDamage += hpDelta;
-            if (bestVictim.rightLegDamage >= LIMB_DETACH_THRESHOLD) {
-              bestVictim.rightLegDetached = true;
-              limbDetached = { kind: 'leg', side: 'right' };
-            }
-          }
-        } else if (bestKind === 'arm' && bestSide !== null) {
-          if (bestSide === 'left' && !bestVictim.leftArmDetached) {
-            bestVictim.leftArmDamage += hpDelta;
-            if (bestVictim.leftArmDamage >= LIMB_DETACH_THRESHOLD) {
-              bestVictim.leftArmDetached = true;
-              limbDetached = { kind: 'arm', side: 'left' };
-            }
-          } else if (bestSide === 'right' && !bestVictim.rightArmDetached) {
-            bestVictim.rightArmDamage += hpDelta;
-            if (bestVictim.rightArmDamage >= LIMB_DETACH_THRESHOLD) {
-              bestVictim.rightArmDetached = true;
-              limbDetached = { kind: 'arm', side: 'right' };
+        // Per-segment damage. Each anatomical piece has its own counter,
+        // so two shots to the same shin detach the lower leg without
+        // affecting the thigh or the other side. Only ACTUAL hp damage
+        // counts (hpDelta) so armour absorption applies to limbs too.
+        // When a segment crosses its threshold we cascade the detached
+        // flag to all distal segments on the same side — a thigh that
+        // tears off takes the shin and foot with it.
+        if (isLimbSegment(bestSegment) && bestSide !== null) {
+          const seg = bestSegment;
+          const side = bestSide;
+          const state = bestVictim.limbs[limbKey(seg, side)];
+          if (!state.detached) {
+            state.damage += hpDelta;
+            if (state.damage >= SEGMENT_DETACH_HP[seg]) {
+              state.detached = true;
+              for (const distal of distalSegments(seg)) {
+                bestVictim.limbs[limbKey(distal, side)].detached = true;
+              }
+              limbDetached = { segment: seg, side };
             }
           }
         }
@@ -256,6 +244,8 @@ export class CombatSystem {
         victimId: bestVictim.id,
         weapon: weapon.id,
         hitbox: bestKind,
+        segment: bestSegment,
+        side: bestSide,
         damage: hpDelta,
         headshot: bestKind === 'head',
         killing,
@@ -379,17 +369,45 @@ function raySphereWorld(
   return t;
 }
 
-/** Random surviving-limb pick for a corpse hit. Weighted toward
+function isLimbSegment(s: HitboxSegment): s is LimbSegmentKind {
+  return s !== 'head' && s !== 'chest' && s !== 'stomach';
+}
+
+/** Random surviving-segment pick for a corpse hit. Weighted toward
  *  arms/legs so centre-mass spam shreds limbs first; head and chest
  *  still come up so a sustained burst eventually hollows the body
- *  out completely. Side is random for limbs, null for head/chest. */
-function pickRandomCorpseLimb(): { kind: HitboxKind; side: 'left' | 'right' | null } {
+ *  out completely. For limb hits we prefer the most-distal segment
+ *  that's still attached on a randomly chosen side, so a corpse loses
+ *  fingers before forearms before whole arms. Side is random for
+ *  limbs, null for head/chest. */
+function pickRandomCorpseSegment(
+  victim: Character,
+): { kind: HitboxKind; segment: HitboxSegment; side: LimbSide | null } {
   const r = Math.random();
-  const side: 'left' | 'right' = Math.random() < 0.5 ? 'left' : 'right';
-  if (r < 0.40) return { kind: 'leg', side };
-  if (r < 0.70) return { kind: 'arm', side };
-  if (r < 0.90) return { kind: 'chest', side: null };
-  return { kind: 'head', side: null };
+  const side: LimbSide = Math.random() < 0.5 ? 'left' : 'right';
+  if (r < 0.40) {
+    const seg = pickAttachedDistalFirst(victim, ['foot', 'shin', 'thigh'], side);
+    return { kind: 'leg', segment: seg ?? 'thigh', side };
+  }
+  if (r < 0.70) {
+    const seg = pickAttachedDistalFirst(victim, ['hand', 'forearm', 'upperArm'], side);
+    return { kind: 'arm', segment: seg ?? 'upperArm', side };
+  }
+  if (r < 0.90) return { kind: 'chest', segment: 'chest', side: null };
+  return { kind: 'head', segment: 'head', side: null };
+}
+
+/** Walk segments distal-first and return the first one still attached
+ *  on the given side, or null if every segment in the list is gone. */
+function pickAttachedDistalFirst(
+  victim: Character,
+  order: LimbSegmentKind[],
+  side: LimbSide,
+): LimbSegmentKind | null {
+  for (const seg of order) {
+    if (!victim.limbs[limbKey(seg, side)].detached) return seg;
+  }
+  return null;
 }
 
 /** Convenience export so consumers don't need to import inaccuracy + def. */

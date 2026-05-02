@@ -21,6 +21,7 @@
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { CharacterController } from './controller';
 import type { Character } from '../entities/character';
+import { makeFreshLimbs } from '../entities/character';
 import { defaultInventory } from '../weapons/inventory';
 
 export class LocalPlayer {
@@ -60,10 +61,7 @@ export class LocalPlayer {
       speed: 0,
       inAir: false,
       crouching: false,
-      leftLegDamage: 0, rightLegDamage: 0,
-      leftArmDamage: 0, rightArmDamage: 0,
-      leftLegDetached: false, rightLegDetached: false,
-      leftArmDetached: false, rightArmDetached: false,
+      limbs: makeFreshLimbs(),
     };
     this.ownCharacter = this.character;
     this.syncFromController();

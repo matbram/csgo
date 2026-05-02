@@ -19,6 +19,7 @@ import type { Character } from '../entities/character';
 import type { WeaponInstance } from '../weapons/inventory';
 import type { CombatSystem } from './combat';
 import { computeInaccuracy } from './inaccuracy';
+import { armInaccuracyDeg } from '../entities/character';
 import { events } from '../engine/events';
 
 export interface FiringInput {
@@ -127,13 +128,11 @@ export class FiringController {
 
     // Compute inaccuracy at fire time. A scoped weapon trades movement for
     // pinpoint precision — apply the configured multiplier when active.
-    const armsGone =
-      (shooter.leftArmDetached ? 1 : 0) + (shooter.rightArmDetached ? 1 : 0);
     let inacc = computeInaccuracy(inst.def, {
       speed: shooter.speed,
       inAir: shooter.inAir,
       crouching: shooter.crouching,
-      armsGone,
+      armPenaltyDeg: armInaccuracyDeg(shooter),
     });
     if (inst.scopeLevel > 0 && inst.def.scopedInaccuracyMul !== undefined) {
       inacc *= inst.def.scopedInaccuracyMul;
