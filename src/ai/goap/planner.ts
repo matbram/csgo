@@ -95,7 +95,11 @@ function enumerateGoals(s: PlanInputs, p: PersonalityProfile): Goal[] {
 function recipeFor(goal: Goal, s: PlanInputs): PlannedAction[] | null {
   switch (goal.kind) {
     case 'eliminate': {
-      // Visible: shoot. Recent: walk toward last-known + then engage.
+      // Visible: shoot. Recent: walk toward last-known + then engage,
+      // but only if the chase is a tactical commitment (≤15 m). A
+      // 47 m chase observed in the round-2 capture meant the bot
+      // ran across the map into a deathtrap; falling through here
+      // lets the planner pick `reachCallout` and hold position.
       if (s.visibleEnemyId === goal.enemyId && s.visibleEnemyPos) {
         return [
           {
@@ -105,6 +109,10 @@ function recipeFor(goal: Goal, s: PlanInputs): PlannedAction[] | null {
         ];
       }
       if (s.recentEnemyPos) {
+        const dx = s.recentEnemyPos.x - s.pos.x;
+        const dz = s.recentEnemyPos.z - s.pos.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > MAX_CHASE_DIST_M) return null;
         return [
           {
             kind: 'moveToCallout',
@@ -182,21 +190,25 @@ function recipeFor(goal: Goal, s: PlanInputs): PlannedAction[] | null {
     }
 
     case 'survive': {
-      // Retreat toward the strategist's spawn-side objective if any,
-      // otherwise rely on the legacy brain (Save state). For v1 we
-      // surface this as a single "moveToCallout" toward the bot's
-      // current objective when there is one — otherwise fall through.
-      if (!s.objective) return null;
+      // Retreat to the side's spawn centroid. The strategist's slot
+      // is whatever the round plan assigned (often an active firefight
+      // location like A_SITE) — wrong target for "I'm low and need
+      // safety". Captured in round-2 JSON: ct-bot-1 (Tiger) at 29 HP
+      // hit survive and the recipe queued him back to A_SITE, the
+      // opposite of safe.
       return [
         {
-          kind: 'moveToCallout', callout: s.objective.callout,
-          x: s.objective.x, z: s.objective.z,
-          label: `retreat to ${s.objective.callout.toLowerCase()}`,
+          kind: 'moveToCallout',
+          x: s.spawnPos.x, z: s.spawnPos.z,
+          callout: undefined,
+          label: 'retreat to spawn',
         },
       ];
     }
   }
 }
+
+const MAX_CHASE_DIST_M = 15;
 
 function shortId(id: string): string {
   return id.length <= 8 ? id : id.slice(-6);

@@ -824,6 +824,7 @@ function buildPlanInputs(bot: Bot, perception: Perception, ctx: BrainContext): P
     objective: objective as PlanInputs['objective'],
     teammatesAlive: ctx.teammatesAlive,
     enemiesAlive: ctx.enemiesAlive,
+    spawnPos: { x: ctx.spawnX, z: ctx.spawnZ },
   };
 }
 

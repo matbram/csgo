@@ -933,7 +933,11 @@ function bootstrap(): void {
         // Save state retargets the bot's path to spawn. We re-apply here
         // each tick so a transition out of save restores the strategist's
         // original objective even if the brain didn't write it back.
-        applyBotObjectiveFromBoard(bot, board, spawnPos);
+        // Planner-driven bots own their bot.objective via decideViaPlanner
+        // (the moveToCallout action sets it); re-applying the strategist's
+        // slot every tick fights the planner's chase target and produces
+        // the per-tick goal oscillation captured in the round-2 JSON.
+        if (!bot.usePlanner) applyBotObjectiveFromBoard(bot, board, spawnPos);
         // Reactive reflexes (flash / damage flinch / molly / panic)
         // run BEFORE the brain step. They mutate controller state and
         // can override the bot's objective; the brain decides on top

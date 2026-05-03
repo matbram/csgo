@@ -178,6 +178,11 @@ export function snapBotToCharacterPose(bot: Bot): void {
   bot.brain.plannedActionIdx = 0;
   bot.brain.currentGoal = null;
   bot.brain.state = 'idle';
+  // The `!currentGoal` early-return in shouldReplan would mask a
+  // stale watch on the first replan, but resetting it explicitly
+  // keeps the field consistent with the rest of the cleared state.
+  // The field is private; cast through unknown to write it.
+  (bot.brain as unknown as { lastObjectiveCallout: string | null }).lastObjectiveCallout = null;
   // Re-enable every detachable part — any limb torn off last round
   // gets put back so the respawned bot isn't missing pieces.
   const p = bot.parts;

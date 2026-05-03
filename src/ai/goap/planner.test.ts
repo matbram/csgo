@@ -23,6 +23,7 @@ function baseInput(over: Partial<PlanInputs> = {}): PlanInputs {
     recentEnemyId: null, recentEnemyPos: null,
     objective: null,
     teammatesAlive: 5, enemiesAlive: 5,
+    spawnPos: { x: 0, z: -38 },
     ...over,
   };
 }
@@ -44,13 +45,35 @@ describe('GOAP planner (recipe v1)', () => {
     expect(r!.plan[0]!.targetId).toBe('e1');
   });
 
-  it('eliminate recent enemy → chase then engage', () => {
+  it('eliminate recent enemy within chase range → chase then engage', () => {
     const r = planFor(baseInput({
       recentEnemyId: 'e1',
-      recentEnemyPos: { x: 10, y: 0, z: 10 },
+      recentEnemyPos: { x: 10, y: 0, z: 10 },        // ~14m, within MAX_CHASE_DIST_M
     }), NEUTRAL);
     expect(r).not.toBeNull();
     expect(r!.plan.map(a => a.kind)).toEqual(['moveToCallout', 'engage']);
+  });
+
+  it('eliminate recent enemy beyond chase range falls through (no plan from this goal)', () => {
+    // 47m chase observed in capture #2 — bot ran across map into nothing.
+    // The recipe should now refuse, leaving the planner to pick a less
+    // suicidal goal (here: nothing else applies, so result is null).
+    const r = planFor(baseInput({
+      recentEnemyId: 'e1',
+      recentEnemyPos: { x: 30, y: 0, z: 30 },        // ~42m, way beyond cap
+    }), NEUTRAL);
+    expect(r).toBeNull();
+  });
+
+  it('eliminate too-far falls through to reachCallout when objective exists', () => {
+    const r = planFor(baseInput({
+      recentEnemyId: 'e1',
+      recentEnemyPos: { x: 30, y: 0, z: 30 },
+      objective: { callout: 'A_LONG', x: 5, z: -10 },
+    }), NEUTRAL);
+    expect(r).not.toBeNull();
+    expect(r!.goal.kind).toBe('reachCallout');
+    expect(r!.plan.map(a => a.kind)).toEqual(['moveToCallout', 'holdAngle']);
   });
 
   it('plant goal beats reachCallout when carrier on objective', () => {
@@ -110,18 +133,38 @@ describe('GOAP planner (recipe v1)', () => {
     expect(r!.goal.kind).toBe('eliminate');
   });
 
-  it('survive triggers when low HP + outnumbered, retreats to objective', () => {
+  it('survive triggers when low HP + outnumbered, retreats to spawn', () => {
     const cautious: PersonalityProfile = { ...NEUTRAL, riskAversion: 0.9 };
     const r = planFor(baseInput({
       hp: 25,
       teammatesAlive: 1,
       enemiesAlive: 3,
-      objective: { callout: 'T_SPAWN', x: 0, z: -38 },
-      // No enemy visible, so eliminate doesn't outweigh survive.
+      // Strategist's slot is on a bombsite (the active firefight) —
+      // survive should NOT route here. It should target spawnPos.
+      objective: { callout: 'A_SITE', x: 100, z: 100 },
+      spawnPos: { x: 7, z: -42 },
     }), cautious);
     expect(r).not.toBeNull();
     expect(r!.goal.kind).toBe('survive');
+    expect(r!.plan).toHaveLength(1);
     expect(r!.plan[0]!.kind).toBe('moveToCallout');
+    expect(r!.plan[0]!.x).toBe(7);
+    expect(r!.plan[0]!.z).toBe(-42);
+  });
+
+  it('survive works without an objective (no slot needed when retreating)', () => {
+    const cautious: PersonalityProfile = { ...NEUTRAL, riskAversion: 0.9 };
+    const r = planFor(baseInput({
+      hp: 25,
+      teammatesAlive: 1,
+      enemiesAlive: 3,
+      objective: null,
+      spawnPos: { x: 0, z: -38 },
+    }), cautious);
+    expect(r).not.toBeNull();
+    expect(r!.goal.kind).toBe('survive');
+    expect(r!.plan[0]!.x).toBe(0);
+    expect(r!.plan[0]!.z).toBe(-38);
   });
 
   it('survive does not trigger at full HP', () => {

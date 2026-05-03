@@ -94,4 +94,7 @@ export interface PlanInputs {
   /** Team alive count from this bot's perspective. */
   teammatesAlive: number;
   enemiesAlive: number;
+  /** Side spawn centroid — the survive recipe retreats here. Filled
+   *  from the brain's BrainContext.spawnX/Z. */
+  spawnPos: { x: number; z: number };
 }
