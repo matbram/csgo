@@ -40,7 +40,7 @@ import { FiringController } from './combat/firing';
 import { activeInstance, switchTo, makeInstance, cycleScope, nextScrollSlot, consumeActiveGrenade } from './weapons/inventory';
 import { runBotBuy } from './ai/buy';
 import type { WeaponInstance } from './weapons/inventory';
-import { installCombatVisuals } from './combat/visuals';
+import { installCombatVisuals, clearCombatVisuals } from './combat/visuals';
 import { installAudio, ensureAudioContext, setListenerPose, playSound } from './audio/audio';
 import { CombatHud } from './hud/combatHud';
 import { ScopeHud } from './hud/scopeHud';
@@ -299,6 +299,22 @@ function bootstrap(): void {
       atk.killWeapons.push(weapon as never);
     }
     if (vic) vic.deaths += 1;
+    // Ground-snap the corpse. After death the bot's controller stops
+    // updating, so character.pos freezes wherever they were at the
+    // moment of death — including mid-jump, mid-fall, or on the edge
+    // of a ramp. Without this the corpse hovers in mid-air for the
+    // rest of the round (the user reported "body parts staying
+    // floating in the air"). Probe straight down from a metre above
+    // the death position and pin the character's foot Y to whatever
+    // ground we find. syncBotMesh / the local-player corpse render
+    // both read from character.pos, so this is the single root fix.
+    const victim = characters.find(c => c.id === victimId);
+    if (victim) {
+      const PROBE_ABOVE = 1.0;
+      const PROBE_DROP = 60;
+      const ground = query.groundProbe(victim.pos.x, victim.pos.z, victim.pos.y + PROBE_ABOVE, PROBE_DROP);
+      if (ground) victim.pos.y = ground.y;
+    }
     // If the possessed bot just died, drop possession so the player
     // re-enters spectator mode and can pick a different teammate to
     // take over (rather than getting stuck inside a corpse).
@@ -371,6 +387,14 @@ function bootstrap(): void {
     // Drop any in-flight grenades / smokes / fire patches from the
     // previous round — none of that should bleed into the new round.
     grenadeSystem.reset();
+    // Clear every combat visual — gibs, blood decals, tracers, impacts.
+    // Without this the dead bodies + blood from the previous round
+    // stay rendered on the new round's map (user report: "between
+    // rounds the blood and dead bodies should not persist"). Bot
+    // corpses themselves are addressed by `snapBotToCharacterPose`
+    // below — that's a separate render path and resets via the
+    // alive flag flipping back to true.
+    clearCombatVisuals();
     // The local player respawns in their own body next round, so release
     // any active possession before we reset bot state. The previously-
     // possessed bot regains its AI for the new round.
@@ -686,15 +710,15 @@ function bootstrap(): void {
       else if (input.wasPressed('Digit4') && invObj.grenades.length > 0) switched = switchTo(invObj, 'grenade', time.simMs);
       else if (input.wasPressed('Digit5') && invObj.c4) switched = switchTo(invObj, 'c4', time.simMs);
       else if (wheelEligible && wheelTicks !== 0) {
-        // Each tick is one slot step. Wheel-down (positive) goes forward,
-        // wheel-up (negative) goes backward. Cap so a fling doesn't loop.
+        // One wheel notch = one slot step. Wheel-down (positive) goes
+        // forward, wheel-up (negative) goes backward. We deliberately
+        // cap to a single step per frame so a fast wheel-fling or a
+        // trackpad burst doesn't cycle past every weapon — the user
+        // should always see exactly one switch per scroll motion. The
+        // accumulator drains naturally across frames if there's more.
         const dir: 1 | -1 = wheelTicks > 0 ? 1 : -1;
-        const steps = Math.min(Math.abs(wheelTicks), 4);
-        for (let i = 0; i < steps; i++) {
-          const target = nextScrollSlot(invObj, dir);
-          if (!target) break;
-          if (switchTo(invObj, target, time.simMs)) switched = true;
-        }
+        const target = nextScrollSlot(invObj, dir);
+        if (target && switchTo(invObj, target, time.simMs)) switched = true;
       }
       if (switched) viewModel.setWeapon(activeInstance(invObj));
     }

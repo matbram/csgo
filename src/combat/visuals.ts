@@ -379,10 +379,15 @@ function stepGibs(worldQuery: WorldQuery, renderDtMs: number): void {
   const gravity = 18;
   const drag = Math.exp(-dt * 1.8);         // air drag — slows tumble after a beat
   const probeAbove = 1.0;
-  // Probe drop matches the navmesh upper bound: gibs in tall map need
-  // to find the floor below them.
-  const probeDrop = 30;
-  for (const g of gibList) {
+  // Probe drop must reach any ground from anywhere on the map. The
+  // map's vertical span is small but the probe origin is the gib's
+  // position + 1 m, and a gib launched off a head can briefly clear
+  // 3 m. Generous 60 m drop is still cheap (one slab-traced ray
+  // against world geometry) and rules out "no ground found" on
+  // anything inside the playable area.
+  const probeDrop = 60;
+  for (let i = gibList.length - 1; i >= 0; i--) {
+    const g = gibList[i]!;
     if (g.settled) continue;
     g.vy -= gravity * dt;
     g.vx *= drag; g.vz *= drag;
@@ -404,12 +409,29 @@ function stepGibs(worldQuery: WorldQuery, renderDtMs: number): void {
       // Drop a final pool of blood under the gib so it rests in a
       // visible mess.
       spawnGroundBlood(px, ground.y, pz, 0.55 + Math.random() * 0.5);
+      continue;
     }
     // Force-settle if we've been flying too long (probably stuck above
-    // some weird geometry).
-    if (!g.settled && performance.now() - g.spawnedAtMs > GIB_MAX_FLIGHT_MS) {
-      g.settled = true;
+    // some weird geometry, or the launch trajectory carried us out
+    // of probe range). Snap to whatever ground is below if we can
+    // find any; otherwise dispose the mesh — the gib has fallen out
+    // of the playable world and shouldn't render. The previous
+    // implementation just zeroed velocity and called it settled,
+    // which is exactly the "body parts floating in the air" symptom
+    // the user reported.
+    if (performance.now() - g.spawnedAtMs > GIB_MAX_FLIGHT_MS) {
+      const fallback = worldQuery.groundProbe(px, pz, g.mesh.position.y + probeAbove, probeDrop * 4);
+      if (fallback) {
+        g.mesh.position.y = fallback.y + 0.05;
+        spawnGroundBlood(px, fallback.y, pz, 0.55 + Math.random() * 0.5);
+      } else {
+        g.mesh.dispose();
+        gibList.splice(i, 1);
+        continue;
+      }
       g.vy = g.vx = g.vz = 0;
+      g.spinX = g.spinY = g.spinZ = 0;
+      g.settled = true;
     }
   }
 }
@@ -641,4 +663,43 @@ export function installCombatVisuals(opts: CombatVisualOptions = {}): void {
     }
     if (worldQuery) stepGibs(worldQuery, dtMs);
   });
+}
+
+/** Clear every active combat visual — gibs, blood decals, tracers,
+ *  impact sparks. Called at round transition so the new round starts
+ *  on a clean map; without this, gore from one round persists into
+ *  the next ("between rounds the blood and dead bodies should not
+ *  persist" — user report).
+ *
+ *  Implementation notes:
+ *    - Gibs are disposed (mesh.dispose) since they're cloned per-kill
+ *      and not pooled. The gibList is then truncated.
+ *    - Blood decals live in a fixed pool keyed by `active`. We flip
+ *      every decal off and hide its mesh; the pool is reused next
+ *      round so we don't reallocate textures / meshes.
+ *    - Tracers / impacts are short-lived (~70-350 ms) and almost
+ *      always already expired by round-end, but we hide them anyway
+ *      so a freeze→live mid-tracer doesn't carry the streak across.
+ *    - We do NOT touch active particle systems (muzzle/blood
+ *      particles) — those drain naturally within a few hundred ms. */
+export function clearCombatVisuals(): void {
+  for (const g of gibList) {
+    g.mesh.dispose();
+  }
+  gibList.length = 0;
+  for (const b of bloodPool) {
+    if (!b.active) continue;
+    b.active = false;
+    b.mesh.setEnabled(false);
+  }
+  for (const t of tracerPool) {
+    if (!t.active) continue;
+    t.active = false;
+    t.mesh.setEnabled(false);
+  }
+  for (const i of impactPool) {
+    if (!i.active) continue;
+    i.active = false;
+    i.mesh.setEnabled(false);
+  }
 }
