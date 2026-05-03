@@ -111,6 +111,25 @@ export class World {
     return null;
   }
 
+  /** Containing callout if any, else the nearest by centroid distance.
+   *  Used by the comms layer so a bot caught between callout polygons
+   *  ("on the corner of A_LONG and PIT") still produces a usable
+   *  "two a long" callout instead of "one spotted". Cheap — ~25
+   *  callouts per call on Dust 2. */
+  nearestCallout(x: number, y: number, z: number): CalloutId | null {
+    const inside = this.calloutAt(x, y, z);
+    if (inside) return inside;
+    let best: CalloutId | null = null;
+    let bestSq = Infinity;
+    for (const c of this.callouts.values()) {
+      const dx = c.centroid[0] - x;
+      const dz = c.centroid[1] - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestSq) { bestSq = d2; best = c.id; }
+    }
+    return best;
+  }
+
   spawnsForTeam(team: Team): Spawn[] {
     return this.spawns.filter(s => s.team === team);
   }

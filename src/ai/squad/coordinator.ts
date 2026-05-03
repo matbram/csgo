@@ -63,10 +63,23 @@ export function installSquadCoordinator(ctx: CoordinatorContext): void {
     if (!ctx) return;
     const victim = ctx.botById.get(victimId);
     if (!victim) return;
-    // Re-fit roles for the victim's team. Survivors slot into the
-    // same plan, compactly.
     const board = victim.character.team === 'T' ? ctx.tBoard : ctx.ctBoard;
     const aliveCount = ctx.bots().filter(b => b.character.team === board.side && b.character.alive).length;
+    // Skip refit when there's nobody (or only one) left to coordinate.
+    // From a captureRound: T side dying out produced four refits in
+    // 10 s including with 1 → 0 survivors, churning the blackboard
+    // for no benefit.
+    if (aliveCount <= 1) {
+      if (debugLog.isEnabled('squad')) {
+        debugLog.squad('refit-skip', {
+          t: tMs, side: board.side,
+          deceased: victim.id, deceasedName: victim.identity.name,
+          survivorsLeft: aliveCount,
+          reason: 'too-few-alive',
+        });
+      }
+      return;
+    }
     reapplyCurrentStrategy(board, ctx.bots(), ctx.world, ctx.navGrid, ctx.simMs());
     if (debugLog.isEnabled('squad')) {
       debugLog.squad('refit', {

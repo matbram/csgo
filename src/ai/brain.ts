@@ -395,6 +395,10 @@ export class Brain {
       this.plannedActions = result?.plan ?? null;
       this.plannedActionIdx = 0;
       this.currentGoal = result?.goal ?? null;
+      // Sync the watch so the next tick doesn't immediately replan on
+      // the same objective; the planner only re-fires when the
+      // strategist / coordinator actually moves the bot.
+      this.lastObjectiveCallout = ctx.blackboard?.objectiveByBot.get(bot.id)?.callout ?? null;
       _plannerPerf.calls += 1;
       _plannerPerf.totalMs += tookMs;
       _plannerPerf.maxMs = Math.max(_plannerPerf.maxMs, tookMs);
@@ -513,7 +517,9 @@ export class Brain {
 
   /** Has the situation changed enough that the current goal/plan
    *  is wrong? Cheap goal-kind comparison — replans on visible enemy
-   *  appearance / disappearance, bomb phase change, big HP drop. */
+   *  appearance / disappearance, bomb phase change, big HP drop, or
+   *  the strategist / squad coordinator changing this bot's
+   *  objective callout out from under it. */
   private shouldReplan(bot: Bot, perception: Perception, ctx: BrainContext): boolean {
     if (!this.currentGoal) return true;
     const visible = perception.bestTarget(bot.character.pos.x, bot.character.pos.z);
@@ -525,8 +531,20 @@ export class Brain {
         && this.currentGoal.kind !== 'defuse' && this.currentGoal.kind !== 'eliminate') {
       return true;
     }
+    // Strategist / squad coordinator wrote a new objective callout —
+    // replan so the move target follows. Without this, a refit or
+    // siteClear rotation only takes effect after the bot's current
+    // plan exhausts (often "never" for a holdAngle-tail plan).
+    const objCallout = ctx.blackboard?.objectiveByBot.get(bot.id)?.callout ?? null;
+    if (objCallout !== this.lastObjectiveCallout) {
+      this.lastObjectiveCallout = objCallout;
+      return true;
+    }
     return false;
   }
+  /** Last objective callout we observed on the blackboard. Tracked so
+   *  shouldReplan can detect strategist / squad-coordinator updates. */
+  private lastObjectiveCallout: string | null = null;
 
   // ---- Action execution ---------------------------------------------
 

@@ -67,7 +67,7 @@ export function installCommsTriggers(ctx: CommsContext): void {
       // reads better with the body's callout than the killer's).
       const victim = ctx.botById.get(victimId);
       const where = victim
-        ? ctx.world.calloutAt(victim.character.pos.x, victim.character.pos.y, victim.character.pos.z) ?? null
+        ? ctx.world.nearestCallout(victim.character.pos.x, victim.character.pos.y, victim.character.pos.z) ?? null
         : null;
       const pos = victim ? victim.character.pos : attacker.character.pos;
       emit(attacker, 'enemyDown', {
@@ -183,6 +183,23 @@ export function applyCommsIntel(bots: ReadonlyArray<Bot>, nowMs: number): void {
   }
 }
 
+/** Per-bot dedupe for spottedEnemy. Real players say "two A long"
+ *  once and stop unless something changes (count, callout, or the
+ *  enemy disappears + reappears). Without this the cooldown alone
+ *  produces a callout every 2 s while the engagement is ongoing —
+ *  6+ identical calls in a single A_CROSS standoff in the round
+ *  capture I diagnosed. */
+interface LastSpotted {
+  target: string;
+  where: string | null;
+  count: number;
+  /** When the entry was last refreshed; cleared after this many ms
+   *  of silence so a re-spot after a long gap counts as new info. */
+  tMs: number;
+}
+const _lastSpotted = new Map<string, LastSpotted>();
+const SPOTTED_DEDUP_MS = 6000;
+
 /** Per-tick (5 Hz is plenty) trigger that catches state edges the bus
  *  doesn't surface as discrete events: a bot acquiring a new visible
  *  enemy, or the bot's flashedUntilMs going from 0 → set. Called from
@@ -208,13 +225,34 @@ export function tickComms(bots: ReadonlyArray<Bot>, nowMs: number): void {
         const d2 = sq(e.x - bot.character.pos.x) + sq(e.z - bot.character.pos.z);
         if (d2 < bestSq) { nearest = e; bestSq = d2; }
       }
-      const where = ctx.world.calloutAt(nearest.x, nearest.y, nearest.z) ?? null;
-      emit(bot, 'spottedEnemy', {
-        where,
-        count: visibleEnemies.length,
-        pos: { x: nearest.x, y: nearest.y, z: nearest.z },
-        enemyId: nearest.id,
-      });
+      const where = ctx.world.nearestCallout(nearest.x, nearest.y, nearest.z) ?? null;
+      // Dedupe: skip when the (target, callout, count) tuple is
+      // unchanged from the last call within the dedupe window.
+      const last = _lastSpotted.get(bot.id);
+      const sameInfo = !!last
+        && last.target === nearest.id
+        && last.where === where
+        && last.count === visibleEnemies.length
+        && nowMs - last.tMs < SPOTTED_DEDUP_MS;
+      if (!sameInfo) {
+        emit(bot, 'spottedEnemy', {
+          where,
+          count: visibleEnemies.length,
+          pos: { x: nearest.x, y: nearest.y, z: nearest.z },
+          enemyId: nearest.id,
+        });
+        _lastSpotted.set(bot.id, {
+          target: nearest.id, where, count: visibleEnemies.length, tMs: nowMs,
+        });
+      } else {
+        // Refresh the timestamp so dedupe stays active while the
+        // engagement is ongoing.
+        last.tMs = nowMs;
+      }
+    } else {
+      // No visible enemies — drop dedupe so the next sighting counts
+      // as fresh info.
+      _lastSpotted.delete(bot.id);
     }
     // 'flashed' — emitted on the rising edge of flashedUntilMs > nowMs.
     // The grenade:detonated handler covers the typical case but flashes
@@ -248,7 +286,7 @@ function emit(
   const pos = opts?.pos ?? { x: bot.character.pos.x, y: bot.character.pos.y, z: bot.character.pos.z };
   let where = opts?.where;
   if (where === undefined && opts?.whereByPos) {
-    where = ctx.world.calloutAt(pos.x, pos.y, pos.z) ?? null;
+    where = ctx.world.nearestCallout(pos.x, pos.y, pos.z) ?? null;
   }
   // Personality.teamwork shrinks/grows the per-kind cooldown:
   // teamwork=1 → ~0.6× (chatty support); teamwork=0 → ~1.4× (quiet
@@ -299,4 +337,5 @@ export function uninstallCommsTriggers(): void {
   installed = false;
   ctxRef = null;
   _simNowMs = 0;
+  _lastSpotted.clear();
 }

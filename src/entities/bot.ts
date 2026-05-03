@@ -168,6 +168,16 @@ export function snapBotToCharacterPose(bot: Bot): void {
   bot.pathIdx = 0;
   bot.objective = null;
   bot.nextPlanAfterMs = 0;
+  // Clear the GOAP planner queue too — without this, a bot that ended
+  // the previous round in `holdAngle` carries the stale "hold
+  // outside_long" plan into the next round even after the strategist
+  // assigns a new objective. Detected from a captureRound: round 3
+  // freeze had bots showing currentAction="hold outside_long" while
+  // the round 3 strategy targeted B side.
+  bot.brain.plannedActions = null;
+  bot.brain.plannedActionIdx = 0;
+  bot.brain.currentGoal = null;
+  bot.brain.state = 'idle';
   // Re-enable every detachable part — any limb torn off last round
   // gets put back so the respawned bot isn't missing pieces.
   const p = bot.parts;
@@ -269,10 +279,16 @@ export function stepBot(
         const nlen = Math.hypot(ndx, ndz) || 1;
         wishX = ndx / nlen;
         wishZ = ndz / nlen;
-      } else {
-        // Path complete; clear so we don't replan unless objective changes.
-        bot.path = null;
       }
+      // When the last waypoint is consumed we deliberately do NOT
+      // null `bot.path`. Earlier behaviour did, which made the next
+      // tick's "objective set + path null" condition re-request a
+      // path every frame while the bot was parked at hold-angle —
+      // the captureRound showed thousands of identical len=1 path
+      // entries from a single Sable-at-OUTSIDE_LONG hold. Keeping
+      // the path lets the request short-circuit; setBotObjective
+      // clears it cleanly when the strategist / planner moves the
+      // destination.
     } else {
       const len = Math.sqrt(d2);
       wishX = dx / len;
