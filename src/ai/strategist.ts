@@ -286,5 +286,26 @@ function lcgPick(seed: number, n: number): number {
   return s % n;
 }
 
+/** Re-apply the team's currently-installed strategy with the surviving
+ *  alive bots only. Dead bots drop out of slot assignment so plan slot
+ *  N always lands on an alive teammate.
+ *
+ *  Used by the squad coordinator on teammate death to re-fit roles —
+ *  e.g. when a T entry dies, the support fills slot 0 of the rush
+ *  plan, the lurker fills slot 1, etc. Idempotent at round-start when
+ *  every bot is alive (matches what `planRoundStart` already produced). */
+export function reapplyCurrentStrategy(
+  bb: TeamBlackboard,
+  bots: ReadonlyArray<Bot>,
+  world: World,
+  navGrid: NavGrid,
+  nowMs: number,
+): void {
+  const plan = PLANS[bb.strategy];
+  if (!plan) return;
+  const alive = bots.filter(b => b.character.alive);
+  applyPlan(bb, plan, alive, world, navGrid, nowMs);
+}
+
 /** Re-export for tests. */
 export { pickPreplanPlan, pickPostPlantPlan, teamEcoTier };

@@ -327,9 +327,10 @@ html, body {
 }
 .ai-debug-panel .ai-strategy .t  { color: #d49a4e; }
 .ai-debug-panel .ai-strategy .ct { color: #6a9ed6; }
+.ai-debug-panel .ai-strategy .phase { color: #98896c; margin-left: auto; }
 .ai-debug-panel .ai-row {
   display: grid;
-  grid-template-columns: 70px 78px 56px 28px 56px 50px 80px 32px;
+  grid-template-columns: 70px 78px 56px 28px 56px 50px 80px 32px 70px 50px;
   column-gap: 6px;
   padding: 1px 0;
 }
@@ -342,6 +343,8 @@ html, body {
 .ai-debug-panel .ai-row .ammo  { color: #ffe9c2; text-align: right; }
 .ai-debug-panel .ai-row .target{ color: #cfd8e3; }
 .ai-debug-panel .ai-row .known { color: #98896c; text-align: right; }
+.ai-debug-panel .ai-row .action{ color: #b3d4ff; }
+.ai-debug-panel .ai-row .threat{ color: #d09090; text-align: right; }
 
 /* ---------- Sniper scope overlay ---------- */
 .scope-overlay {
@@ -598,6 +601,39 @@ html, body {
 }
 @keyframes killfeed-out {
   to { opacity: 0; transform: translateX(20px); }
+}
+
+/* ---------- Callout feed ---------- */
+.callout-feed {
+  position: absolute;
+  top: 16px;
+  left: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  pointer-events: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  max-width: 260px;
+}
+.callout-row {
+  background: rgba(0, 0, 0, 0.55);
+  padding: 3px 8px;
+  border-left: 2px solid #6a9ed6;
+  color: #f4ead7;
+  display: flex;
+  gap: 8px;
+  animation: callout-in 0.16s ease both;
+}
+.callout-row.t  { border-left-color: #d49a4e; }
+.callout-row.ct { border-left-color: #6a9ed6; }
+.callout-row .speaker { color: #d4c4a3; min-width: 60px; text-transform: lowercase; }
+.callout-row .text    { color: #f4ead7; }
+@keyframes callout-in {
+  from { opacity: 0; transform: translateX(-12px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
 /* ---------- Bomb HUD ---------- */

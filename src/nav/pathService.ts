@@ -9,11 +9,13 @@
  *  version comes when bots start replanning mid-fight in Pass 2. */
 
 import type { NavGrid } from './grid';
-import { findPath, type PathPoint } from './astar';
+import { findPath, type PathPoint, type CostOverlay } from './astar';
 
 interface CacheEntry {
   startKey: number;
   goalKey: number;
+  /** Overlay-name namespace so two overlays don't share a cache slot. */
+  overlay: string;
   path: PathPoint[];
   hitMs: number;
 }
@@ -50,24 +52,33 @@ export class PathService {
   /** Try to compute a path from `start` to `goal`. Returns null when:
    *   - the per-frame budget is exhausted (caller should try again later)
    *   - either endpoint can't be snapped to the navmesh
-   *   - no path exists. */
-  request(start: { x: number; z: number }, goal: { x: number; z: number }): PathPoint[] | null {
+   *   - no path exists.
+   *
+   *  When `overlay` is supplied, A* adds the overlay's per-cell cost on
+   *  top of the base step cost. The overlay key namespaces the cache so
+   *  a covered-path request doesn't return a default-path result. */
+  request(
+    start: { x: number; z: number },
+    goal: { x: number; z: number },
+    overlay?: { key: string; costs: CostOverlay } | null,
+  ): PathPoint[] | null {
     const startCell = this.grid.nearestWalkable(start.x, start.z);
     const goalCell = this.grid.nearestWalkable(goal.x, goal.z);
     if (!startCell || !goalCell) return null;
     const startKey = startCell.j * this.grid.cellsX + startCell.i;
     const goalKey = goalCell.j * this.grid.cellsX + goalCell.i;
+    const overlayKey = overlay?.key ?? '';
     // Cache hit?
     for (const entry of this.cache) {
-      if (entry.startKey === startKey && entry.goalKey === goalKey) {
+      if (entry.startKey === startKey && entry.goalKey === goalKey && entry.overlay === overlayKey) {
         entry.hitMs = this.clock;
         return clonePath(entry.path);
       }
     }
     if (this.remaining <= 0) return null;
     this.remaining -= 1;
-    const path = findPath(this.grid, start, goal);
-    if (path) this.insert(startKey, goalKey, path);
+    const path = findPath(this.grid, start, goal, overlay?.costs);
+    if (path) this.insert(startKey, goalKey, overlayKey, path);
     return path ? clonePath(path) : null;
   }
 
@@ -76,7 +87,7 @@ export class PathService {
     return this.remaining;
   }
 
-  private insert(startKey: number, goalKey: number, path: PathPoint[]): void {
+  private insert(startKey: number, goalKey: number, overlay: string, path: PathPoint[]): void {
     if (this.cache.length >= this.opts.cacheSize) {
       // Evict oldest (smallest hitMs).
       let oldestIdx = 0;
@@ -89,7 +100,7 @@ export class PathService {
       }
       this.cache.splice(oldestIdx, 1);
     }
-    this.cache.push({ startKey, goalKey, path: clonePath(path), hitMs: this.clock });
+    this.cache.push({ startKey, goalKey, overlay, path: clonePath(path), hitMs: this.clock });
   }
 }
 

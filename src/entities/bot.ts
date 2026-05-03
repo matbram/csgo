@@ -24,6 +24,7 @@ import { Perception } from '../ai/perception';
 import { Brain } from '../ai/brain';
 import { getDifficulty, withVariance, type DifficultyId } from '../ai/difficulty';
 import { debugLog } from '../engine/debugLog';
+import { getOrCreateIdentity, type BotIdentity } from '../ai/personality';
 
 /** Distance to a waypoint at which we consider it reached and advance to
  *  the next one. A bit larger than a cell so bots don't hover on each
@@ -56,6 +57,20 @@ export interface Bot {
    *  death — otherwise the brain would overwrite the player's mouse aim
    *  and movement input every frame. */
   aiDisabled: boolean;
+  /** Mirror of difficulty.commsLatencyMs — how long after a teammate
+   *  emits a callout this bot can act on it. The comms layer reads from
+   *  here directly so it doesn't have to reach into Brain internals. */
+  commsLatencyMs: number;
+  /** Persistent identity (display name + archetype + personality
+   *  scalars). Loaded from localStorage on first construction; stable
+   *  across rounds and (subject to localStorage) across sessions. */
+  identity: BotIdentity;
+  /** When true, the brain decides its next action via the GOAP planner
+   *  (`src/ai/goap/planner.ts`) instead of the legacy utility selector.
+   *  Phase 3 v1 turns this on for `expert` difficulty only; the
+   *  planner falls through to legacy execution for the actual tick
+   *  work, so this is safe to flip per bot at runtime. */
+  usePlanner: boolean;
 }
 
 let nextBotId = 1;
@@ -109,7 +124,8 @@ export function createBot(
   // an 11 ms phase per bot spreads them evenly across one tick window.
   const phaseMs = teamIdx * 11;
   const perception = new Perception(difficulty, phaseMs);
-  const brain = new Brain(difficulty, phaseMs);
+  const brain = new Brain(difficulty, phaseMs, id);
+  const identity = getOrCreateIdentity(id);
   return {
     id,
     character,
@@ -122,6 +138,17 @@ export function createBot(
     perception,
     brain,
     aiDisabled: false,
+    // Higher-teamwork bots have a slightly faster comms loop than the
+    // raw difficulty allows; lower-teamwork bots are slower (lurkers
+    // don't call). Multiplier in 0.6..1.4 around the difficulty
+    // baseline.
+    commsLatencyMs: difficulty.commsLatencyMs * (1.4 - 0.8 * identity.personality.teamwork),
+    identity,
+    // Phase 6 default: medium / hard / expert all use the GOAP planner.
+    // Easy stays on the legacy utility selector so the panic/abandon
+    // pathway in `src/ai/reactive/index.ts` still has a forgiving
+    // fallback brain to drop into.
+    usePlanner: (opts?.difficulty ?? 'medium') !== 'easy',
   };
 }
 
@@ -141,6 +168,21 @@ export function snapBotToCharacterPose(bot: Bot): void {
   bot.pathIdx = 0;
   bot.objective = null;
   bot.nextPlanAfterMs = 0;
+  // Clear the GOAP planner queue too — without this, a bot that ended
+  // the previous round in `holdAngle` carries the stale "hold
+  // outside_long" plan into the next round even after the strategist
+  // assigns a new objective. Detected from a captureRound: round 3
+  // freeze had bots showing currentAction="hold outside_long" while
+  // the round 3 strategy targeted B side.
+  bot.brain.plannedActions = null;
+  bot.brain.plannedActionIdx = 0;
+  bot.brain.currentGoal = null;
+  bot.brain.state = 'idle';
+  // The `!currentGoal` early-return in shouldReplan would mask a
+  // stale watch on the first replan, but resetting it explicitly
+  // keeps the field consistent with the rest of the cleared state.
+  // The field is private; cast through unknown to write it.
+  (bot.brain as unknown as { lastObjectiveCallout: string | null }).lastObjectiveCallout = null;
   // Re-enable every detachable part — any limb torn off last round
   // gets put back so the respawned bot isn't missing pieces.
   const p = bot.parts;
@@ -242,10 +284,16 @@ export function stepBot(
         const nlen = Math.hypot(ndx, ndz) || 1;
         wishX = ndx / nlen;
         wishZ = ndz / nlen;
-      } else {
-        // Path complete; clear so we don't replan unless objective changes.
-        bot.path = null;
       }
+      // When the last waypoint is consumed we deliberately do NOT
+      // null `bot.path`. Earlier behaviour did, which made the next
+      // tick's "objective set + path null" condition re-request a
+      // path every frame while the bot was parked at hold-angle —
+      // the captureRound showed thousands of identical len=1 path
+      // entries from a single Sable-at-OUTSIDE_LONG hold. Keeping
+      // the path lets the request short-circuit; setBotObjective
+      // clears it cleanly when the strategist / planner moves the
+      // destination.
     } else {
       const len = Math.sqrt(d2);
       wishX = dx / len;

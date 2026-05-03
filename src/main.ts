@@ -40,7 +40,7 @@ import { FiringController } from './combat/firing';
 import { activeInstance, switchTo, makeInstance, cycleScope, nextScrollSlot, consumeActiveGrenade } from './weapons/inventory';
 import { runBotBuy } from './ai/buy';
 import type { WeaponInstance } from './weapons/inventory';
-import { installCombatVisuals } from './combat/visuals';
+import { installCombatVisuals, clearCombatVisuals } from './combat/visuals';
 import { installAudio, ensureAudioContext, setListenerPose, playSound } from './audio/audio';
 import { CombatHud } from './hud/combatHud';
 import { ScopeHud } from './hud/scopeHud';
@@ -56,6 +56,17 @@ import { NavGrid } from './nav/grid';
 import { PathService } from './nav/pathService';
 import { makeBlackboard, aggregateKnown, refreshTeamRoster, aliveCount } from './ai/blackboard';
 import { planRoundStart, reactToBombPlanted } from './ai/strategist';
+import { setMatchSeed, getMatchSeed } from './ai/rng';
+import { buildWorldStateView, type WorldStateView } from './ai/world/state';
+import { downloadCapture } from './ai/diagnostics';
+import { getPlannerPerf } from './ai/brain';
+import { buildTacticalGraph, type TacticalGraph } from './ai/world/tacticalGraph';
+import { dust2Overlay } from './ai/world/tacticalOverlay.dust2';
+import { installCommsTriggers, tickComms, setCommsSimNow, applyCommsIntel } from './ai/comms/triggers';
+import { installReactive, tickReactive } from './ai/reactive';
+import { installSquadCoordinator, tickSquadCoordinator } from './ai/squad/coordinator';
+import { resetComms } from './ai/comms/callouts';
+import { CalloutFeedHud } from './hud/calloutFeed';
 import type { Character } from './entities/character';
 import { pointInPolygon2D } from './map/world';
 import { makeMatch, beginRound, endRound, applyHalftime, stepMatch, type MatchState } from './match/match';
@@ -140,8 +151,28 @@ function bootstrap(): void {
   // and the grid is small enough to bake synchronously (<200 ms).
   const navGrid = NavGrid.build(world, query);
   const pathService = new PathService(navGrid, { maxRequestsPerFrame: 2, cacheSize: 32 });
+  // Tactical graph — cover/peek/hold/pre-aim derived from the nav grid +
+  // world geometry, with a per-map hand-tune overlay. Phase 1: built
+  // once at boot, only the F4 overlay reads it. Phase 3 cuts the GOAP
+  // planner over to it for cost overlays + action targeting.
+  const tacticalGraph: TacticalGraph = buildTacticalGraph(world, navGrid, query, dust2Overlay);
 
   // 7) Roster: 4 T bots (teammates of local), 5 CT bots (enemies).
+  // Seed the AI RNG before bots are constructed so each Brain forks a
+  // stable per-bot stream from the match seed. A `?seed=N` URL param
+  // overrides the wall-clock default — used for replaying a specific
+  // round during debugging. `?diag=1` auto-enables every debug
+  // channel at boot so the user can capture a round end-to-end
+  // without typing console commands first.
+  const urlParams = new URLSearchParams(window.location.search);
+  const seedParam = urlParams.get('seed');
+  if (seedParam) {
+    const n = Number.parseInt(seedParam, 10);
+    if (Number.isFinite(n)) setMatchSeed(n);
+  }
+  if (urlParams.get('diag') === '1') {
+    debugLog.enableAll();
+  }
   const bots: Bot[] = [];
   for (let i = 0; i < 4; i++) {
     const sp = tSpawns[(i + 1) % Math.max(1, tSpawns.length)] ?? startSpawn!;
@@ -175,6 +206,21 @@ function bootstrap(): void {
   const tBoard = makeBlackboard('T');
   const ctBoard = makeBlackboard('CT');
 
+  // Comms triggers — wired once. Listens to combat/match/grenade events
+  // on the typed bus and synthesises player-style callouts onto the
+  // per-team blackboards. The lookup map is rebuilt on roster changes
+  // (only at boot today; per-round respawn keeps the same ids).
+  const botById = new Map<string, Bot>();
+  for (const b of bots) botById.set(b.id, b);
+  installCommsTriggers({ botById, tBoard, ctBoard, world });
+  installReactive();
+  installSquadCoordinator({
+    botById,
+    bots: () => bots,
+    tBoard, ctBoard, world, navGrid,
+    simMs: () => time.simMs,
+  });
+
   // Compute spawn centroids once — used by the bot Save state to pick
   // a retreat target. Spawn polygons aren't authored separately, so we
   // average the spawn points for each team.
@@ -204,6 +250,7 @@ function bootstrap(): void {
   const combatHud = new CombatHud();
   const scopeHud = new ScopeHud();
   const aiDebugHud = new AiDebugHud();
+  const calloutFeedHud = new CalloutFeedHud();
   const flashOverlay = new FlashOverlay();
   const spectatorHud = new SpectatorHud();
   const matchEndHud = new MatchEndHud();
@@ -239,6 +286,9 @@ function bootstrap(): void {
   // Used by the bot brain's grenade-lineup trigger windows.
   let liveStartedAtMs = 0;
   let lastSeenPhase: 'freeze' | 'live' | 'end' | null = null;
+  /** Last-built AI world view. Rebuilt every live tick; held across
+   *  freeze/end so the debug HUD has something to render. */
+  let worldView: WorldStateView | null = null;
 
   // Track local-player kills/deaths for scoreboard + economy.
   events.on('combat:kill', ({ attackerId, victimId, weapon }) => {
@@ -249,6 +299,22 @@ function bootstrap(): void {
       atk.killWeapons.push(weapon as never);
     }
     if (vic) vic.deaths += 1;
+    // Ground-snap the corpse. After death the bot's controller stops
+    // updating, so character.pos freezes wherever they were at the
+    // moment of death — including mid-jump, mid-fall, or on the edge
+    // of a ramp. Without this the corpse hovers in mid-air for the
+    // rest of the round (the user reported "body parts staying
+    // floating in the air"). Probe straight down from a metre above
+    // the death position and pin the character's foot Y to whatever
+    // ground we find. syncBotMesh / the local-player corpse render
+    // both read from character.pos, so this is the single root fix.
+    const victim = characters.find(c => c.id === victimId);
+    if (victim) {
+      const PROBE_ABOVE = 1.0;
+      const PROBE_DROP = 60;
+      const ground = query.groundProbe(victim.pos.x, victim.pos.z, victim.pos.y + PROBE_ABOVE, PROBE_DROP);
+      if (ground) victim.pos.y = ground.y;
+    }
     // If the possessed bot just died, drop possession so the player
     // re-enters spectator mode and can pick a different teammate to
     // take over (rather than getting stuck inside a corpse).
@@ -321,6 +387,14 @@ function bootstrap(): void {
     // Drop any in-flight grenades / smokes / fire patches from the
     // previous round — none of that should bleed into the new round.
     grenadeSystem.reset();
+    // Clear every combat visual — gibs, blood decals, tracers, impacts.
+    // Without this the dead bodies + blood from the previous round
+    // stay rendered on the new round's map (user report: "between
+    // rounds the blood and dead bodies should not persist"). Bot
+    // corpses themselves are addressed by `snapBotToCharacterPose`
+    // below — that's a separate render path and resets via the
+    // alive flag flipping back to true.
+    clearCombatVisuals();
     // The local player respawns in their own body next round, so release
     // any active possession before we reset bot state. The previously-
     // possessed bot regains its AI for the new round.
@@ -636,15 +710,15 @@ function bootstrap(): void {
       else if (input.wasPressed('Digit4') && invObj.grenades.length > 0) switched = switchTo(invObj, 'grenade', time.simMs);
       else if (input.wasPressed('Digit5') && invObj.c4) switched = switchTo(invObj, 'c4', time.simMs);
       else if (wheelEligible && wheelTicks !== 0) {
-        // Each tick is one slot step. Wheel-down (positive) goes forward,
-        // wheel-up (negative) goes backward. Cap so a fling doesn't loop.
+        // One wheel notch = one slot step. Wheel-down (positive) goes
+        // forward, wheel-up (negative) goes backward. We deliberately
+        // cap to a single step per frame so a fast wheel-fling or a
+        // trackpad burst doesn't cycle past every weapon — the user
+        // should always see exactly one switch per scroll motion. The
+        // accumulator drains naturally across frames if there's more.
         const dir: 1 | -1 = wheelTicks > 0 ? 1 : -1;
-        const steps = Math.min(Math.abs(wheelTicks), 4);
-        for (let i = 0; i < steps; i++) {
-          const target = nextScrollSlot(invObj, dir);
-          if (!target) break;
-          if (switchTo(invObj, target, time.simMs)) switched = true;
-        }
+        const target = nextScrollSlot(invObj, dir);
+        if (target && switchTo(invObj, target, time.simMs)) switched = true;
       }
       if (switched) viewModel.setWeapon(activeInstance(invObj));
     }
@@ -785,6 +859,10 @@ function bootstrap(): void {
     const curPhase = match.round?.phase ?? null;
     if (curPhase === 'live' && lastSeenPhase !== 'live') {
       liveStartedAtMs = time.simMs;
+      // New round entered live phase — clear the per-team comms log so
+      // the HUD doesn't carry over chatter from the previous round.
+      resetComms(tBoard.comms);
+      resetComms(ctBoard.comms);
       debugLog.round('phase.freeze→live', {
         round: match.round?.number,
         simMs: time.simMs,
@@ -799,6 +877,10 @@ function bootstrap(): void {
       });
     }
     lastSeenPhase = curPhase;
+    // Pin the comms layer's "now" before any bus listener fires this
+    // frame — combat/grenade emissions in stepRound resolve through the
+    // event bus, and tryEmit needs a stable simMs to gate cooldowns.
+    setCommsSimNow(time.simMs);
 
     if (match.round?.phase === 'live') {
       // Blackboard refresh once per tick: aggregate per-bot KnownEnemies
@@ -816,6 +898,33 @@ function bootstrap(): void {
       const localCT = localPlayer.character.team === 'CT' && localPlayer.character.alive ? 1 : 0;
       const tAlive = aliveCount(tBoard, bots) + localT;
       const ctAlive = aliveCount(ctBoard, bots) + localCT;
+
+      // Per-tick comms: edge triggers (visible-enemy spotted, flashed)
+      // that the event bus doesn't surface as discrete events.
+      tickComms(bots, time.simMs);
+      // Push delivered teammate callouts into receiver perception as
+      // 'sound'-confidence intel — a bot that hears a teammate call
+      // "spotted A long" turns to face the angle, but won't fire
+      // blind into it (LOS still required for visible).
+      applyCommsIntel(bots, time.simMs);
+      // Squad coordinator: react to recent comms log entries (e.g.
+      // siteClear → rotate one bot off the cleared site to the other).
+      // The death replan is driven by combat:kill on the bus directly.
+      tickSquadCoordinator();
+
+      // Build the AI world view once per tick. Phase 0: only the debug
+      // HUD reads it; brain decisions still flow through the legacy
+      // BrainContext fields. Phase 3 cuts the planner over to reading
+      // here directly.
+      worldView = buildWorldStateView({
+        simMs: time.simMs,
+        liveSinceMs: liveStartedAtMs,
+        phase: 'live',
+        bomb: bombInfo,
+        bots,
+        tBoard, ctBoard,
+        localAlive: { T: localT, CT: localCT },
+      });
 
       for (const bot of bots) {
         if (!bot.character.alive) continue;
@@ -843,11 +952,25 @@ function bootstrap(): void {
           spawnZ: spawnPos.z,
           grenades: grenadeSystem,
           liveSinceMs: liveStartedAtMs,
+          view: worldView!,
         };
         // Save state retargets the bot's path to spawn. We re-apply here
         // each tick so a transition out of save restores the strategist's
         // original objective even if the brain didn't write it back.
-        applyBotObjectiveFromBoard(bot, board, spawnPos);
+        // Planner-driven bots own their bot.objective via decideViaPlanner
+        // (the moveToCallout action sets it); re-applying the strategist's
+        // slot every tick fights the planner's chase target and produces
+        // the per-tick goal oscillation captured in the round-2 JSON.
+        if (!bot.usePlanner) applyBotObjectiveFromBoard(bot, board, spawnPos);
+        // Reactive reflexes (flash / damage flinch / molly / panic)
+        // run BEFORE the brain step. They mutate controller state and
+        // can override the bot's objective; the brain decides on top
+        // of whatever the reactive layer left.
+        tickReactive(bot, {
+          fire: grenadeSystem.fire,
+          spawnByTeam: { T: tSpawnCentroid, CT: ctSpawnCentroid },
+          panicEnabled: (b) => settings.get().difficulty === 'easy' && b.identity.personality.riskAversion > 0.4,
+        }, enemies, time.simMs);
         const decision = bot.brain.step(bot, bot.perception, brainCtx, firing, dtMs, time.simMs);
         stepBot(bot, dtMs, time.simMs, pathService, {
           followPath: decision.followPath,
@@ -895,6 +1018,19 @@ function bootstrap(): void {
         if (bot.aiDisabled) continue;
         bot.perception.maybeStep(bot.character, characters, query, time.simMs, grenadeSystem.smoke);
       }
+      // Keep the world view fresh during freeze/end so the debug HUD
+      // reflects the current roster, strategy, and known-enemy decay.
+      const localT2 = localPlayer.character.team === 'T' && localPlayer.character.alive ? 1 : 0;
+      const localCT2 = localPlayer.character.team === 'CT' && localPlayer.character.alive ? 1 : 0;
+      worldView = buildWorldStateView({
+        simMs: time.simMs,
+        liveSinceMs: liveStartedAtMs,
+        phase: curPhase === 'end' ? 'end' : 'freeze',
+        bomb: mirrorBomb(match.round?.bomb),
+        bots,
+        tBoard, ctBoard,
+        localAlive: { T: localT2, CT: localCT2 },
+      });
     }
 
     // Plant / defuse intent — read from the same E key. We assemble
@@ -1105,12 +1241,16 @@ function bootstrap(): void {
     );
 
     debugHud.update(renderDtMs);
-    aiDebugHud.update(bots, tBoard, ctBoard);
+    aiDebugHud.update(bots, tBoard, ctBoard, worldView, tacticalGraph);
+    // Local team's comms feed. Local player is always on T at boot
+    // (and may swap at halftime); we follow `localPlayer.character.team`.
+    const localTeamBoard = localPlayer.character.team === 'T' ? tBoard : ctBoard;
+    calloutFeedHud.update(time.simMs, localTeamBoard, bots);
     combatHud.update(localPlayer.character, performance.now());
     flashOverlay.update(localPlayer.character, time.simMs);
     matchEndHud.update(match);
     roundHud.update(match, characters, time.simMs);
-    scoreboard.update(match, characters);
+    scoreboard.update(match, characters, bots);
     bombHud.update(localPlayer.character, match.round?.bomb ?? null, world);
   });
 
@@ -1128,7 +1268,22 @@ function bootstrap(): void {
   // Quiet a couple of unused-ish references for the linter.
   void engine; void scene; void makeInstance; void playSound;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).__game = { engine, scene, world, controller, localPlayer, fps, debugHud, bots, navGrid, pathService, characters, debugLog, get match() { return match; } };
+  (globalThis as any).__game = {
+    engine, scene, world, controller, localPlayer, fps,
+    debugHud, bots, navGrid, pathService, characters, debugLog,
+    tBoard, ctBoard,
+    get match() { return match; },
+    get seed() { return getMatchSeed(); },
+    get perf() {
+      return { planner: getPlannerPerf() };
+    },
+    /** Capture a snapshot of the current AI state + recent debug
+     *  channels and download it as a JSON file. Drag the file into
+     *  a chat to share with the developer. */
+    captureRound() {
+      downloadCapture({ bots, match, tBoard, ctBoard });
+    },
+  };
 }
 
 function currentInstance(p: LocalPlayer): WeaponInstance | null {

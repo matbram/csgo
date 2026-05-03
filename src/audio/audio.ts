@@ -93,6 +93,34 @@ function generateAllSounds(): void {
     const c = synthesizeFootstep('concrete', i);
     if (c) buffers.set(`footstep_concrete_${i}`, c);
   }
+  // Comms cues — two short pip variants for now (low + high pitch).
+  // The comms layer maps each callout kind to one of these. A future
+  // pass can swap to recorded VO without touching the call sites.
+  const pipLow = synthesizeCommsPip(440);
+  if (pipLow) buffers.set('comms_pip_low', pipLow);
+  const pipHigh = synthesizeCommsPip(880);
+  if (pipHigh) buffers.set('comms_pip_high', pipHigh);
+}
+
+/** Short tonal pip for comms callouts. Recognisable, distinct from
+ *  weapon SFX, and cheap. Two variants (different base freq) let the
+ *  comms layer split urgent vs. info callouts by ear. */
+function synthesizeCommsPip(baseFreq: number): AudioBuffer | null {
+  if (!ctx) return null;
+  const sr = ctx.sampleRate;
+  const length = Math.floor(sr * 0.12);
+  const buf = ctx.createBuffer(1, length, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const t = i / sr;
+    // Fast attack, modest decay — sounds like a short radio chirp.
+    const env = Math.min(1, t * 60) * Math.exp(-t * 14);
+    // Two-tone for a slight "voice" timbre.
+    const tone = Math.sin(2 * Math.PI * baseFreq * t) * 0.6
+      + Math.sin(2 * Math.PI * (baseFreq * 1.5) * t) * 0.25;
+    data[i] = clip(tone * env * 0.45);
+  }
+  return buf;
 }
 
 /** A short, punchy run-step. Sand reads as a low rumble + a noisy
@@ -443,6 +471,22 @@ export function playSoundAt(id: string, x: number, y: number, z: number, opts?: 
   panner.positionZ.setValueAtTime(z, c.currentTime);
   src.connect(g).connect(panner).connect(masterGain);
   src.start();
+}
+
+/** Play a synth pip cue for a comms callout. The kind decides which
+ *  pip is used (urgent → high; info → low) so the player can tell
+ *  apart "I'm low" from "holding angle" without reading the feed. */
+export function playCalloutCue(
+  kind: string,
+  x: number, y: number, z: number,
+): void {
+  // Urgent kinds get the higher pip; everything else the lower.
+  const urgent =
+    kind === 'lowHp' || kind === 'needBackup' || kind === 'tradeMe' ||
+    kind === 'flashed' || kind === 'enemyDown' || kind === 'oneLeft' ||
+    kind === 'bombPlantedCall' || kind === 'bombHeard';
+  const id = urgent ? 'comms_pip_high' : 'comms_pip_low';
+  playSoundAt(id, x, y, z, { volume: 0.55, maxDistance: 60 });
 }
 
 export function setListenerPose(

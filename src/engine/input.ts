@@ -212,11 +212,14 @@ class InputState {
 
   /** Consume accumulated wheel motion as a signed integer count of "ticks":
    *  positive when the user scrolled DOWN (deltaY > 0, conventionally
-   *  "next" in lists), negative for scroll UP. Each ~100 units of native
-   *  deltaY is one tick. Any sub-tick remainder is preserved across calls
-   *  so slow trackpad scrolls still register eventually. */
+   *  "next" in lists), negative for scroll UP. Each ~50 units of native
+   *  deltaY is one tick — chosen so a typical mouse-wheel notch
+   *  (deltaY=100 in pixel mode) is two ticks at most, but a light
+   *  trackpad swipe (deltaY≈30 per event) registers within a single
+   *  swipe instead of feeling unresponsive. Any sub-tick remainder is
+   *  preserved across calls. */
   consumeWheelTicks(): number {
-    const STEP = 100;
+    const STEP = 50;
     if (this.wheelAccum > -STEP && this.wheelAccum < STEP) return 0;
     const ticks = (this.wheelAccum > 0 ? Math.floor(this.wheelAccum / STEP) : Math.ceil(this.wheelAccum / STEP));
     this.wheelAccum -= ticks * STEP;

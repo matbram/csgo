@@ -24,6 +24,11 @@ import { pointInPolygon2D } from '../map/world';
 import type { TeamBlackboard } from './blackboard';
 import type { GrenadeLineup } from './grenadeLineups';
 import type { GrenadeSystem } from '../grenades/system';
+import { forkRng, getMatchSeed, type SeededRng } from './rng';
+import type { WorldStateView } from './world/state';
+import { planFor } from './goap/planner';
+import type { PlannedAction, Goal, PlanInputs } from './goap/types';
+import { debugLog } from '../engine/debugLog';
 
 export type BrainState = 'idle' | 'movetoObj' | 'engage' | 'reload' | 'plant' | 'defuse' | 'save' | 'throwGrenade';
 
@@ -63,6 +68,11 @@ export interface BrainContext {
   /** Sim ms when the round entered live phase. Used to gate 'opening'
    *  lineups (only consider them within the first few seconds). */
   liveSinceMs: number;
+  /** Per-tick immutable world view shared across all AI layers. Phase 0
+   *  threads it through but the legacy decide() still reads from the
+   *  flat fields above. Phase 3 cuts the planner over to reading from
+   *  this view directly and the flat fields go away. */
+  view: WorldStateView;
 }
 
 export class Brain {
@@ -95,12 +105,27 @@ export class Brain {
   /** Sim ms before which we don't try to throw — used to give the bot a
    *  beat to get into position after picking up a lineup. */
   private throwReadyAtMs = 0;
+  /** Per-bot deterministic RNG, forked from the match seed by bot id.
+   *  Drives aim noise (+ future GOAP cost jitter). Each bot owns its own
+   *  stream so reordering bot evaluation in the loop doesn't shift any
+   *  bot's draws — replays stay stable. */
+  private readonly rng: SeededRng;
+  /** Phase 3 GOAP queue. When non-null, the brain consumes head action
+   *  per planning tick; advances on completion; replans when goal
+   *  changes or the plan is exhausted. */
+  plannedActions: PlannedAction[] | null = null;
+  /** Index into plannedActions for the action currently being run. */
+  plannedActionIdx = 0;
+  /** Goal the planner picked at the last replan — for the F4 HUD. */
+  currentGoal: Goal | null = null;
 
   constructor(
     private readonly difficulty: BotDifficulty,
     phaseMs: number,
+    botId: string,
   ) {
     this.nextDecisionMs = phaseMs;
+    this.rng = forkRng(getMatchSeed(), `brain:${botId}`);
   }
 
   /** Per sim-tick step. Returns an indication of whether the brain wants
@@ -116,13 +141,17 @@ export class Brain {
     this.lastCtx = ctx;
     if (nowMs >= this.nextDecisionMs) {
       this.nextDecisionMs = nowMs + DECISION_INTERVAL_MS;
-      this.decide(bot, perception, nowMs);
+      if (bot.usePlanner) {
+        this.decideViaPlanner(bot, perception, ctx, nowMs);
+      } else {
+        this.decide(bot, perception, nowMs);
+      }
     }
 
     // Resample aim noise on its own clock.
     if (nowMs >= this.noiseUntilMs) {
-      this.noiseYawDeg = gaussian() * this.difficulty.aimErrorDeg;
-      this.noisePitchDeg = gaussian() * this.difficulty.aimErrorDeg;
+      this.noiseYawDeg = this.rng.gaussian() * this.difficulty.aimErrorDeg;
+      this.noisePitchDeg = this.rng.gaussian() * this.difficulty.aimErrorDeg;
       this.noiseUntilMs = nowMs + this.difficulty.aimNoiseResampleMs;
     }
 
@@ -332,6 +361,190 @@ export class Brain {
       this.engageStartMs = nowMs;
     }
   }
+
+  /** Phase 3: planner-driven decide. Maintains a `plannedActions`
+   *  queue. Each call:
+   *    1. Advances the queue head if its completion predicate is true.
+   *    2. Replans (calls `planFor`) when the queue is exhausted, when
+   *       no plan exists, or when the goal kind no longer matches the
+   *       situation (e.g. a visible enemy appeared while we were
+   *       walking to a callout — bump to 'eliminate').
+   *    3. Maps the head action to a legacy brain state; the existing
+   *       run* dispatch in step() executes the actual tick work.
+   *
+   *  This split (planner picks intent; legacy code executes) keeps the
+   *  blast radius small — every existing run* method still runs. */
+  private decideViaPlanner(bot: Bot, perception: Perception, ctx: BrainContext, nowMs: number): void {
+    // Advance head action if complete.
+    if (this.plannedActions && this.plannedActionIdx < this.plannedActions.length) {
+      const head = this.plannedActions[this.plannedActionIdx]!;
+      if (this.actionComplete(head, bot, perception, ctx, nowMs)) {
+        this.plannedActionIdx += 1;
+      }
+    }
+    // (Re)plan if needed: no plan, plan exhausted, or goal mismatch.
+    const exhausted = !this.plannedActions
+      || this.plannedActionIdx >= this.plannedActions.length;
+    const mismatch = !exhausted && this.shouldReplan(bot, perception, ctx);
+    const needPlan = exhausted || mismatch;
+    if (needPlan) {
+      const input = buildPlanInputs(bot, perception, ctx);
+      const t0 = performance.now();
+      const result = planFor(input, bot.identity.personality);
+      const tookMs = performance.now() - t0;
+      this.plannedActions = result?.plan ?? null;
+      this.plannedActionIdx = 0;
+      this.currentGoal = result?.goal ?? null;
+      // Sync the watch so the next tick doesn't immediately replan on
+      // the same objective; the planner only re-fires when the
+      // strategist / coordinator actually moves the bot.
+      this.lastObjectiveCallout = ctx.blackboard?.objectiveByBot.get(bot.id)?.callout ?? null;
+      _plannerPerf.calls += 1;
+      _plannerPerf.totalMs += tookMs;
+      _plannerPerf.maxMs = Math.max(_plannerPerf.maxMs, tookMs);
+      if (debugLog.isEnabled('planner')) {
+        debugLog.planner('replan', {
+          t: nowMs,
+          id: bot.id,
+          name: bot.identity.name,
+          reason: !this.plannedActions && exhausted ? 'no-plan'
+            : exhausted ? 'plan-complete'
+            : 'goal-mismatch',
+          goal: result?.goal.kind ?? '-',
+          urgency: result?.goal.urgency ?? null,
+          plan: result?.plan.map(a => a.kind) ?? [],
+          tookMs: Number(tookMs.toFixed(3)),
+          hp: bot.character.hp,
+          ammoFrac: input.ammoFraction,
+          enemiesAlive: ctx.enemiesAlive,
+        });
+      }
+    }
+
+    const head = this.plannedActions && this.plannedActionIdx < this.plannedActions.length
+      ? this.plannedActions[this.plannedActionIdx]!
+      : null;
+    if (!head) {
+      this.state = 'idle';
+      return;
+    }
+
+    // Map head action → legacy brain state, with side effects so the
+    // existing run<State> dispatch executes the right sub-routine.
+    switch (head.kind) {
+      case 'engage':
+        if (head.targetId && head.targetId !== this.engageId) {
+          this.engageId = head.targetId;
+          this.engageStartMs = nowMs;
+        }
+        this.state = 'engage';
+        break;
+      case 'reload':
+        this.state = 'reload';
+        break;
+      case 'plant':
+        this.state = 'plant';
+        break;
+      case 'defuse':
+        this.state = 'defuse';
+        break;
+      case 'moveToCallout': {
+        // Override bot.objective if the planner picked a different
+        // destination than the strategist's slot. Inline the body of
+        // setBotObjective to avoid a circular import (brain ↔ bot).
+        if (head.x !== undefined && head.z !== undefined) {
+          const cur = bot.objective;
+          if (!cur || Math.hypot(cur.x - head.x, cur.z - head.z) > 0.5) {
+            bot.objective = { x: head.x, z: head.z };
+            bot.path = null;
+            bot.pathIdx = 0;
+            bot.nextPlanAfterMs = 0;
+          }
+        }
+        this.state = 'movetoObj';
+        break;
+      }
+      case 'holdAngle': {
+        // Reach the spot via the existing path follower; once close,
+        // adopt the desired facing. We surface this as 'idle' so the
+        // brain doesn't move; controller yaw nudge happens here.
+        if (head.facingYaw !== undefined) {
+          const k = 0.20;
+          bot.controller.state.yaw = lerpAngle(bot.controller.state.yaw, head.facingYaw, k);
+        }
+        this.state = 'idle';
+        break;
+      }
+    }
+  }
+
+  /** Predicate per action kind — when true, the action is done and
+   *  we advance the queue. */
+  private actionComplete(a: PlannedAction, bot: Bot, perception: Perception, ctx: BrainContext, _nowMs: number): boolean {
+    switch (a.kind) {
+      case 'moveToCallout': {
+        if (a.x === undefined || a.z === undefined) return true;
+        const dx = bot.character.pos.x - a.x;
+        const dz = bot.character.pos.z - a.z;
+        return Math.hypot(dx, dz) < 1.2;
+      }
+      case 'engage': {
+        // Done when target is gone (dead or out of perception entirely).
+        if (!a.targetId) return true;
+        const known = perception.known.get(a.targetId);
+        if (!known) return true;
+        const live = ctx.characters.find(c => c.id === a.targetId);
+        return !live || !live.alive;
+      }
+      case 'reload': {
+        const inv = bot.character.inventory;
+        if (!inv) return true;
+        const inst = activeInstance(inv);
+        if (inst.def.magazine === 0) return true;
+        return inst.ammoMag / inst.def.magazine >= 0.95;
+      }
+      case 'plant':
+        return ctx.bomb?.phase === 'planted' || ctx.bomb?.phase === 'finished';
+      case 'defuse':
+        return ctx.bomb?.phase === 'finished' || ctx.bomb?.phase === 'carried';
+      case 'holdAngle':
+        // Hold persists; the goal-mismatch check in shouldReplan() is
+        // what eventually retires this action when something more
+        // urgent comes up.
+        return false;
+    }
+  }
+
+  /** Has the situation changed enough that the current goal/plan
+   *  is wrong? Cheap goal-kind comparison — replans on visible enemy
+   *  appearance / disappearance, bomb phase change, big HP drop, or
+   *  the strategist / squad coordinator changing this bot's
+   *  objective callout out from under it. */
+  private shouldReplan(bot: Bot, perception: Perception, ctx: BrainContext): boolean {
+    if (!this.currentGoal) return true;
+    const visible = perception.bestTarget(bot.character.pos.x, bot.character.pos.z);
+    const haveVisibleEnemy = visible !== null && visible.confidence === 'visible';
+    // Visible enemy + we weren't on 'eliminate' → escalate.
+    if (haveVisibleEnemy && this.currentGoal.kind !== 'eliminate') return true;
+    // Bomb planted while we were doing something else → CT side rotates.
+    if (ctx.bomb?.phase === 'planted' && bot.character.team === 'CT'
+        && this.currentGoal.kind !== 'defuse' && this.currentGoal.kind !== 'eliminate') {
+      return true;
+    }
+    // Strategist / squad coordinator wrote a new objective callout —
+    // replan so the move target follows. Without this, a refit or
+    // siteClear rotation only takes effect after the bot's current
+    // plan exhausts (often "never" for a holdAngle-tail plan).
+    const objCallout = ctx.blackboard?.objectiveByBot.get(bot.id)?.callout ?? null;
+    if (objCallout !== this.lastObjectiveCallout) {
+      this.lastObjectiveCallout = objCallout;
+      return true;
+    }
+    return false;
+  }
+  /** Last objective callout we observed on the blackboard. Tracked so
+   *  shouldReplan can detect strategist / squad-coordinator updates. */
+  private lastObjectiveCallout: string | null = null;
 
   // ---- Action execution ---------------------------------------------
 
@@ -566,6 +779,55 @@ export class Brain {
 
 // ---- Helpers --------------------------------------------------------
 
+/** Adapter: build the planner's `PlanInputs` from the brain's tick
+ *  context. Lives here (not in goap/) because the conversion knows
+ *  about Bot/Character/Perception shapes the planner shouldn't depend
+ *  on directly. */
+function buildPlanInputs(bot: Bot, perception: Perception, ctx: BrainContext): PlanInputs {
+  const c = bot.character;
+  const inv = c.inventory;
+  const inst = inv ? activeInstance(inv) : null;
+  const ammoFraction = inst && inst.def.magazine > 0 ? inst.ammoMag / inst.def.magazine : null;
+  const visible = perception.bestTarget(c.pos.x, c.pos.z);
+  let visibleEnemyId: string | null = null;
+  let visibleEnemyPos: PlanInputs['visibleEnemyPos'] = null;
+  let recentEnemyId: string | null = null;
+  let recentEnemyPos: PlanInputs['recentEnemyPos'] = null;
+  if (visible) {
+    if (visible.confidence === 'visible') {
+      visibleEnemyId = visible.id;
+      visibleEnemyPos = { x: visible.x, y: visible.y, z: visible.z };
+    } else {
+      recentEnemyId = visible.id;
+      recentEnemyPos = { x: visible.x, y: visible.y, z: visible.z };
+    }
+  }
+  const bombInfo = ctx.bomb;
+  const bombPos = bombInfo?.pos ?? null;
+  const objBoard = ctx.blackboard?.objectiveByBot.get(bot.id);
+  const objective = objBoard
+    ? { callout: objBoard.callout as PlanInputs['objective'] extends infer O ? O extends { callout: infer C } ? C : never : never,
+        x: objBoard.x, z: objBoard.z, facingYaw: objBoard.facingYaw }
+    : null;
+  return {
+    selfId: bot.id,
+    side: c.team,
+    pos: { x: c.pos.x, y: c.pos.y, z: c.pos.z },
+    hp: c.hp,
+    hasC4: !!c.inventory?.c4,
+    ammoFraction,
+    bomb: bombInfo
+      ? { phase: bombInfo.phase, site: bombInfo.site, pos: bombPos ? { x: bombPos.x, y: bombPos.y, z: bombPos.z } : null }
+      : { phase: 'finished', site: null, pos: null },
+    visibleEnemyId, visibleEnemyPos,
+    recentEnemyId, recentEnemyPos,
+    objective: objective as PlanInputs['objective'],
+    teammatesAlive: ctx.teammatesAlive,
+    enemiesAlive: ctx.enemiesAlive,
+    spawnPos: { x: ctx.spawnX, z: ctx.spawnZ },
+  };
+}
+
 function isLineupTriggered(lu: GrenadeLineup, ctx: BrainContext, nowMs: number): boolean {
   switch (lu.trigger) {
     case 'opening':
@@ -611,13 +873,6 @@ function aimRequest(bot: Bot, _mode: string): { ox: number; oy: number; oz: numb
 
 function degToRad(d: number): number { return d * Math.PI / 180; }
 
-/** Approximate 0-mean gaussian via Box-Muller half-step (one sample). */
-function gaussian(): number {
-  const u = 1 - Math.random();
-  const v = Math.random();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v) * 0.5;
-}
-
 function lerpAngle(a: number, b: number, k: number): number {
   let diff = b - a;
   while (diff > Math.PI) diff -= Math.PI * 2;
@@ -636,4 +891,19 @@ function aimErrorDegrees(curYaw: number, curPitch: number, tgtYaw: number, tgtPi
   while (dy < -Math.PI) dy += Math.PI * 2;
   const dp = tgtPitch - curPitch;
   return Math.hypot(dy, dp) * 180 / Math.PI;
+}
+
+/** Rolling planner perf counter — reset by `getPlannerPerf({reset:true})`.
+ *  Surfaced on `__game.perf.planner` so the user can call out
+ *  pathological frames ("the planner ran 14 ms last round"). */
+const _plannerPerf = { calls: 0, totalMs: 0, maxMs: 0 };
+export function getPlannerPerf(opts?: { reset?: boolean }): { calls: number; meanMs: number; maxMs: number } {
+  const meanMs = _plannerPerf.calls > 0 ? _plannerPerf.totalMs / _plannerPerf.calls : 0;
+  const out = { calls: _plannerPerf.calls, meanMs, maxMs: _plannerPerf.maxMs };
+  if (opts?.reset) {
+    _plannerPerf.calls = 0;
+    _plannerPerf.totalMs = 0;
+    _plannerPerf.maxMs = 0;
+  }
+  return out;
 }

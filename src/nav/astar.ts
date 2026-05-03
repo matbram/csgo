@@ -69,6 +69,13 @@ class Heap {
   }
 }
 
+/** Optional per-cell extra-cost overlay used by the path service when a
+ *  caller wants to bias movement (e.g. "MoveCovered" prefers cells with
+ *  low exposure). Length must equal `grid.cellsX * grid.cellsZ`; values
+ *  are added to the per-step base cost. Pass null/undefined for the
+ *  legacy zero-cost overlay. */
+export type CostOverlay = ReadonlyArray<number> | Float32Array | null | undefined;
+
 /** Find a path from `startWorld` to `goalWorld` over `grid`. Returns null
  *  if either endpoint can't be snapped to the navmesh, or no path exists.
  *
@@ -78,6 +85,7 @@ export function findPath(
   grid: NavGrid,
   startWorld: { x: number; z: number },
   goalWorld: { x: number; z: number },
+  costOverlay?: CostOverlay,
 ): PathPoint[] | null {
   const start = grid.nearestWalkable(startWorld.x, startWorld.z);
   const goal = grid.nearestWalkable(goalWorld.x, goalWorld.z);
@@ -136,7 +144,8 @@ export function findPath(
       if (closed[nIdx]) continue;
       // Penalize big vertical jumps so paths prefer flat connections.
       const dy = Math.abs(grid.groundYAt(ni, nj) - grid.groundYAt(ci, cj));
-      const stepCost = baseCost * (1 + Math.min(2, dy));
+      const overlayCost = costOverlay ? (costOverlay[nIdx] ?? 0) : 0;
+      const stepCost = baseCost * (1 + Math.min(2, dy)) + overlayCost;
       const tentative = cg + stepCost;
       if (tentative < gScore[nIdx]!) {
         gScore[nIdx] = tentative;
